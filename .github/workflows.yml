@@ -1,0 +1,20 @@
+name: CI
+
+on: [push]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-18.04
+
+    steps:
+    - uses: actions/checkout@v1
+    - name: Run a line script
+      run: echo Compile rk3399-roc-pc kernel-5.3.6 Start!
+    - name: Run a compile the kernel script
+      run: |
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        make 100ask_roc-rk3399-pc_defconfig
+        make Image
+        make dtbs
