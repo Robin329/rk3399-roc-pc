@@ -38,6 +38,7 @@ def build_kernel(command_one):
        rk3399-roc-pc
     """
     if "build_kernel" == command_one:
+        os.system("make rk3399-roc-pc_defconfig")
         print("===============" + '\033[1;33m' + "Start Build Image" + '\033[0m' + "===============")
         ret = os.system("make Image 2>&1 | tee build_Image.log")
         if ret == 0:
