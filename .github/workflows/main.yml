@@ -10,7 +10,7 @@ jobs:
     steps:
     - uses: actions/checkout@v1
     - name: Run a line script
-      run: echo Compile rk3399-roc-pc kernel-5.3.6 Start!
+      run: echo "Compile rk3399-roc-pc kernel-5.3.6 Start!"
     - name: Run a compile the kernel script
       run: |
         export ARCH=arm64
