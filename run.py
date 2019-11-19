@@ -40,22 +40,33 @@ def build_kernel(command_one):
     if "build_kernel" == command_one:
         os.system("make rk3399-roc-pc_defconfig")
         print("===============" + '\033[1;33m' + "Start Build Image" + '\033[0m' + "===============")
-        ret = os.system("make Image 2>&1 | tee build_Image.log")
+        ret = os.system("make Image   2>&1 | tee build_Image.log")
         if ret == 0:
             print("Compile Finished !!!")
         print("===============" + '\033[1;33m' + "End Build Image" + '\033[0m' + "===============")
         #time.sleep(3)
         print("===============" + '\033[1;33m' + "Start Build dtbs" + '\033[0m' + "===============")
-        os.system("make dtbs 2>&1 | tee build_dtbs.log")
+        os.system("make dtbs   2>&1 | tee build_dtbs.log")
         print("===============" + '\033[1;33m' + "END Build dtbs" + '\033[0m' + "===============")
     elif "dtbs" == command_one:
-        os.system("make dtbsb 2>&1 | tee build_dtbs.log")
+        os.system("make dtbs   2>&1 | tee build_dtbs.log")
     elif "Image" == command_one:
-        os.system("make Image")
+        os.system("make Image   2>&1 | tee build_Image.log")
     elif "clean" == command_one:
         finish = os.system("make clean")
         if finish == 0:
             print("Clean Finish !!!")
+    elif "modules" == command_one:
+        print("===============" + '\033[1;33m' + "Start Build MODULES" + '\033[0m' + "===============")
+        #os.system("make ARCH=arm64 mrproper")
+        ret_modules = os.system("make  ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules")
+        print("===============" + '\033[1;33m' + "END Build modules" + '\033[0m' + "===============")
+        if ret_modules == 0:
+            print("===============" + '\033[1;33m' + "Start INSTALL MODULES" + '\033[0m' + "===============")
+            os.system("sudo make ARCH=arm64 INSTALL_MOD_PATH=~/nfs_rootfs/rootfs modules_install")
+            print("===============" + '\033[1;33m' + "END INSTALL dtbs" + '\033[0m' + "===============")
+        else:
+            print("COMPILE MODULES FAILED !!!")
     else:
         logger.error("Unknown command  name %s", command_one)
         sys.exit(1)
