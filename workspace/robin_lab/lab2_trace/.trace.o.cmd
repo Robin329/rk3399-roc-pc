@@ -1,1 +1,0 @@
-cmd_/labs/linux-lab/workspace/robin_lab/lab2_trace/trace.o := aarch64-linux-gnu-ld  -EL  -maarch64elf    -r -o /labs/linux-lab/workspace/robin_lab/lab2_trace/trace.o /labs/linux-lab/workspace/robin_lab/lab2_trace/trace_demo.o
