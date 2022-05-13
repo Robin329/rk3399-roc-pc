@@ -8,11 +8,14 @@
 #include <linux/kfifo.h>
 #include <linux/io.h>
 #include <linux/workqueue.h>
-#include <drm/drmP.h>
+
+#include <drm/drm_device.h>
+#include <drm/drm_mm.h>
 
 struct armada_crtc;
 struct armada_gem_object;
 struct clk;
+struct drm_display_mode;
 struct drm_fb_helper;
 
 static inline void
@@ -69,6 +72,8 @@ struct armada_private {
 	struct dentry		*de;
 #endif
 };
+
+#define drm_to_armada_dev(dev) container_of(dev, struct armada_private, drm)
 
 int armada_fbdev_init(struct drm_device *);
 void armada_fbdev_fini(struct drm_device *);

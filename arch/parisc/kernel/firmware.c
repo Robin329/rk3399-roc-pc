@@ -4,7 +4,8 @@
  *
  *	PDC == Processor Dependent Code
  *
- * See http://www.parisc-linux.org/documentation/index.html
+ * See PDC documentation at
+ * https://parisc.wiki.kernel.org/index.php/Technical_Documentation
  * for documentation describing the entry points and calling
  * conventions defined below.
  *
@@ -50,7 +51,7 @@
  *					prumpf	991016	
  */
 
-#include <stdarg.h>
+#include <linux/stdarg.h>
 
 #include <linux/delay.h>
 #include <linux/init.h>
@@ -310,6 +311,19 @@ int pdc_chassis_disp(unsigned long disp)
 
 	return retval;
 }
+
+/**
+ * pdc_cpu_rendenzvous - Stop currently executing CPU
+ * @retval: -1 on error, 0 on success
+ */
+int __pdc_cpu_rendezvous(void)
+{
+	if (is_pdc_pat())
+		return mem_pdc_call(PDC_PAT_CPU, PDC_PAT_CPU_RENDEZVOUS);
+	else
+		return mem_pdc_call(PDC_PROC, 1, 0);
+}
+
 
 /**
  * pdc_chassis_warn - Fetches chassis warnings
@@ -1044,6 +1058,38 @@ int pdc_mem_pdt_read_entries(struct pdc_mem_read_pdt *pret,
 		return PDC_ERROR;
 #endif
 
+	return retval;
+}
+
+/**
+ * pdc_pim_toc11 - Fetch TOC PIM 1.1 data from firmware.
+ * @ret: pointer to return buffer
+ */
+int pdc_pim_toc11(struct pdc_toc_pim_11 *ret)
+{
+	int retval;
+	unsigned long flags;
+
+	spin_lock_irqsave(&pdc_lock, flags);
+	retval = mem_pdc_call(PDC_PIM, PDC_PIM_TOC, __pa(pdc_result),
+			      __pa(ret), sizeof(*ret));
+	spin_unlock_irqrestore(&pdc_lock, flags);
+	return retval;
+}
+
+/**
+ * pdc_pim_toc20 - Fetch TOC PIM 2.0 data from firmware.
+ * @ret: pointer to return buffer
+ */
+int pdc_pim_toc20(struct pdc_toc_pim_20 *ret)
+{
+	int retval;
+	unsigned long flags;
+
+	spin_lock_irqsave(&pdc_lock, flags);
+	retval = mem_pdc_call(PDC_PIM, PDC_PIM_TOC, __pa(pdc_result),
+			      __pa(ret), sizeof(*ret));
+	spin_unlock_irqrestore(&pdc_lock, flags);
 	return retval;
 }
 

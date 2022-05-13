@@ -108,7 +108,6 @@ static const struct dma_fence_ops drm_writeback_fence_ops = {
 	.get_driver_name = drm_writeback_fence_get_driver_name,
 	.get_timeline_name = drm_writeback_fence_get_timeline_name,
 	.enable_signaling = drm_writeback_fence_enable_signaling,
-	.wait = dma_fence_default_wait,
 };
 
 static int create_writeback_properties(struct drm_device *dev)
@@ -324,6 +323,9 @@ void drm_writeback_cleanup_job(struct drm_writeback_job *job)
 	if (job->fb)
 		drm_framebuffer_put(job->fb);
 
+	if (job->out_fence)
+		dma_fence_put(job->out_fence);
+
 	kfree(job);
 }
 EXPORT_SYMBOL(drm_writeback_cleanup_job);
@@ -366,24 +368,28 @@ drm_writeback_signal_completion(struct drm_writeback_connector *wb_connector,
 {
 	unsigned long flags;
 	struct drm_writeback_job *job;
+	struct dma_fence *out_fence;
 
 	spin_lock_irqsave(&wb_connector->job_lock, flags);
 	job = list_first_entry_or_null(&wb_connector->job_queue,
 				       struct drm_writeback_job,
 				       list_entry);
-	if (job) {
+	if (job)
 		list_del(&job->list_entry);
-		if (job->out_fence) {
-			if (status)
-				dma_fence_set_error(job->out_fence, status);
-			dma_fence_signal(job->out_fence);
-			dma_fence_put(job->out_fence);
-		}
-	}
+
 	spin_unlock_irqrestore(&wb_connector->job_lock, flags);
 
 	if (WARN_ON(!job))
 		return;
+
+	out_fence = job->out_fence;
+	if (out_fence) {
+		if (status)
+			dma_fence_set_error(out_fence, status);
+		dma_fence_signal(out_fence);
+		dma_fence_put(out_fence);
+		job->out_fence = NULL;
+	}
 
 	INIT_WORK(&job->cleanup_work, cleanup_work);
 	queue_work(system_long_wq, &job->cleanup_work);

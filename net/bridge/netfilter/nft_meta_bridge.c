@@ -87,9 +87,8 @@ static int nft_meta_bridge_get_init(const struct nft_ctx *ctx,
 		return nft_meta_get_init(ctx, expr, tb);
 	}
 
-	priv->dreg = nft_parse_register(tb[NFTA_META_DREG]);
-	return nft_validate_register_store(ctx, priv->dreg, NULL,
-					   NFT_DATA_VALUE, len);
+	return nft_parse_register_store(ctx, tb[NFTA_META_DREG], &priv->dreg,
+					NULL, NFT_DATA_VALUE, len);
 }
 
 static struct nft_expr_type nft_meta_bridge_type;
@@ -101,6 +100,25 @@ static const struct nft_expr_ops nft_meta_bridge_get_ops = {
 	.dump		= nft_meta_get_dump,
 };
 
+static bool nft_meta_bridge_set_reduce(struct nft_regs_track *track,
+				       const struct nft_expr *expr)
+{
+	int i;
+
+	for (i = 0; i < NFT_REG32_NUM; i++) {
+		if (!track->regs[i].selector)
+			continue;
+
+		if (track->regs[i].selector->ops != &nft_meta_bridge_get_ops)
+			continue;
+
+		track->regs[i].selector = NULL;
+		track->regs[i].bitwise = NULL;
+	}
+
+	return false;
+}
+
 static const struct nft_expr_ops nft_meta_bridge_set_ops = {
 	.type		= &nft_meta_bridge_type,
 	.size		= NFT_EXPR_SIZE(sizeof(struct nft_meta)),
@@ -108,6 +126,7 @@ static const struct nft_expr_ops nft_meta_bridge_set_ops = {
 	.init		= nft_meta_set_init,
 	.destroy	= nft_meta_set_destroy,
 	.dump		= nft_meta_set_dump,
+	.reduce		= nft_meta_bridge_set_reduce,
 	.validate	= nft_meta_set_validate,
 };
 
@@ -155,3 +174,4 @@ module_exit(nft_meta_bridge_module_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("wenxu <wenxu@ucloud.cn>");
 MODULE_ALIAS_NFT_AF_EXPR(AF_BRIDGE, "meta");
+MODULE_DESCRIPTION("Support for bridge dedicated meta key");

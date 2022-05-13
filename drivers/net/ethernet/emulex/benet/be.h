@@ -33,7 +33,6 @@
 #include "be_hw.h"
 #include "be_roce.h"
 
-#define DRV_VER			"12.0.0.0"
 #define DRV_NAME		"be2net"
 #define BE_NAME			"Emulex BladeEngine2"
 #define BE3_NAME		"Emulex BladeEngine3"
@@ -192,7 +191,6 @@ struct be_eq_obj {
 } ____cacheline_aligned_in_smp;
 
 struct be_aic_obj {		/* Adaptive interrupt coalescing (AIC) info */
-	bool enable;
 	u32 min_eqd;		/* in usecs */
 	u32 max_eqd;		/* in usecs */
 	u32 prev_eqd;		/* in usecs */
@@ -589,6 +587,7 @@ struct be_adapter {
 
 	struct be_drv_stats drv_stats;
 	struct be_aic_obj aic_obj[MAX_EVT_QS];
+	bool aic_enabled;
 	u8 vlan_prio_bmap;	/* Available Priority BitMap */
 	u16 recommended_prio_bits;/* Recommended Priority bits in vlan tag */
 	struct be_dma_mem rx_filter; /* Cmd DMA mem for rx-filter */
@@ -655,8 +654,6 @@ struct be_adapter {
 	u8 hba_port_num;
 	u16 pvid;
 	__be16 vxlan_port;		/* offloaded vxlan port num */
-	int vxlan_port_count;		/* active vxlan port count */
-	struct list_head vxlan_port_list;	/* vxlan port list */
 	struct phy_info phy;
 	u8 wol_cap;
 	bool wol_en;
@@ -680,9 +677,6 @@ struct be_adapter {
 struct be_cmd_work {
 	struct work_struct work;
 	struct be_adapter *adapter;
-	union {
-		__be16 vxlan_port;
-	} info;
 };
 
 #define be_physfn(adapter)		(!adapter->virtfn)

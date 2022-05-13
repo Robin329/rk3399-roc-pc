@@ -17,9 +17,27 @@
 #include <string.h>
 #include <unistd.h>
 #include <asm/bug.h>
+#include <linux/kernel.h>
 #include <linux/zalloc.h>
 
-struct namespaces *namespaces__new(struct namespaces_event *event)
+static const char *perf_ns__names[] = {
+	[NET_NS_INDEX]		= "net",
+	[UTS_NS_INDEX]		= "uts",
+	[IPC_NS_INDEX]		= "ipc",
+	[PID_NS_INDEX]		= "pid",
+	[USER_NS_INDEX]		= "user",
+	[MNT_NS_INDEX]		= "mnt",
+	[CGROUP_NS_INDEX]	= "cgroup",
+};
+
+const char *perf_ns__name(unsigned int id)
+{
+	if (id >= ARRAY_SIZE(perf_ns__names))
+		return "UNKNOWN";
+	return perf_ns__names[id];
+}
+
+struct namespaces *namespaces__new(struct perf_record_namespaces *event)
 {
 	struct namespaces *namespaces;
 	u64 link_info_size = ((event ? event->nr_namespaces : NR_NAMESPACES) *
@@ -42,16 +60,49 @@ void namespaces__free(struct namespaces *namespaces)
 	free(namespaces);
 }
 
+static int nsinfo__get_nspid(struct nsinfo *nsi, const char *path)
+{
+	FILE *f = NULL;
+	char *statln = NULL;
+	size_t linesz = 0;
+	char *nspid;
+
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+
+	while (getline(&statln, &linesz, f) != -1) {
+		/* Use tgid if CONFIG_PID_NS is not defined. */
+		if (strstr(statln, "Tgid:") != NULL) {
+			nsi->tgid = (pid_t)strtol(strrchr(statln, '\t'),
+						     NULL, 10);
+			nsi->nstgid = nsi->tgid;
+		}
+
+		if (strstr(statln, "NStgid:") != NULL) {
+			nspid = strrchr(statln, '\t');
+			nsi->nstgid = (pid_t)strtol(nspid, NULL, 10);
+			/*
+			 * If innermost tgid is not the first, process is in a different
+			 * PID namespace.
+			 */
+			nsi->in_pidns = (statln + sizeof("NStgid:") - 1) != nspid;
+			break;
+		}
+	}
+
+	fclose(f);
+	free(statln);
+	return 0;
+}
+
 int nsinfo__init(struct nsinfo *nsi)
 {
 	char oldns[PATH_MAX];
 	char spath[PATH_MAX];
 	char *newns = NULL;
-	char *statln = NULL;
 	struct stat old_stat;
 	struct stat new_stat;
-	FILE *f = NULL;
-	size_t linesz = 0;
 	int rv = -1;
 
 	if (snprintf(oldns, PATH_MAX, "/proc/self/ns/mnt") >= PATH_MAX)
@@ -81,30 +132,9 @@ int nsinfo__init(struct nsinfo *nsi)
 	if (snprintf(spath, PATH_MAX, "/proc/%d/status", nsi->pid) >= PATH_MAX)
 		goto out;
 
-	f = fopen(spath, "r");
-	if (f == NULL)
-		goto out;
-
-	while (getline(&statln, &linesz, f) != -1) {
-		/* Use tgid if CONFIG_PID_NS is not defined. */
-		if (strstr(statln, "Tgid:") != NULL) {
-			nsi->tgid = (pid_t)strtol(strrchr(statln, '\t'),
-						     NULL, 10);
-			nsi->nstgid = nsi->tgid;
-		}
-
-		if (strstr(statln, "NStgid:") != NULL) {
-			nsi->nstgid = (pid_t)strtol(strrchr(statln, '\t'),
-						     NULL, 10);
-			break;
-		}
-	}
-	rv = 0;
+	rv = nsinfo__get_nspid(nsi, spath);
 
 out:
-	if (f != NULL)
-		(void) fclose(f);
-	free(statln);
 	free(newns);
 	return rv;
 }
@@ -122,6 +152,7 @@ struct nsinfo *nsinfo__new(pid_t pid)
 		nsi->tgid = pid;
 		nsi->nstgid = pid;
 		nsi->need_setns = false;
+		nsi->in_pidns = false;
 		/* Init may fail if the process exits while we're trying to look
 		 * at its proc information.  In that case, save the pid but
 		 * don't try to enter the namespace.
@@ -148,6 +179,7 @@ struct nsinfo *nsinfo__copy(struct nsinfo *nsi)
 		nnsi->tgid = nsi->tgid;
 		nnsi->nstgid = nsi->nstgid;
 		nnsi->need_setns = nsi->need_setns;
+		nnsi->in_pidns = nsi->in_pidns;
 		if (nsi->mntns_path) {
 			nnsi->mntns_path = strdup(nsi->mntns_path);
 			if (!nnsi->mntns_path) {
@@ -261,4 +293,25 @@ char *nsinfo__realpath(const char *path, struct nsinfo *nsi)
 	nsinfo__mountns_exit(&nsc);
 
 	return rpath;
+}
+
+int nsinfo__stat(const char *filename, struct stat *st, struct nsinfo *nsi)
+{
+	int ret;
+	struct nscookie nsc;
+
+	nsinfo__mountns_enter(nsi, &nsc);
+	ret = stat(filename, st);
+	nsinfo__mountns_exit(&nsc);
+
+	return ret;
+}
+
+bool nsinfo__is_in_root_namespace(void)
+{
+	struct nsinfo nsi;
+
+	memset(&nsi, 0x0, sizeof(nsi));
+	nsinfo__get_nspid(&nsi, "/proc/self/status");
+	return !nsi.in_pidns;
 }

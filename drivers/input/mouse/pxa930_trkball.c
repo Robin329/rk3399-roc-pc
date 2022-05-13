@@ -147,10 +147,8 @@ static int pxa930_trkball_probe(struct platform_device *pdev)
 	int irq, error;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(&pdev->dev, "failed to get trkball irq\n");
+	if (irq < 0)
 		return -ENXIO;
-	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
@@ -169,7 +167,7 @@ static int pxa930_trkball_probe(struct platform_device *pdev)
 		goto failed;
 	}
 
-	trkball->mmio_base = ioremap_nocache(res->start, resource_size(res));
+	trkball->mmio_base = ioremap(res->start, resource_size(res));
 	if (!trkball->mmio_base) {
 		dev_err(&pdev->dev, "failed to ioremap registers\n");
 		error = -ENXIO;

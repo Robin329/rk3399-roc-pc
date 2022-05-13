@@ -45,16 +45,17 @@ static inline struct vi_sdma_mqd *get_sdma_mqd(void *mqd)
 }
 
 static void update_cu_mask(struct mqd_manager *mm, void *mqd,
-			struct queue_properties *q)
+			struct mqd_update_info *minfo)
 {
 	struct vi_mqd *m;
 	uint32_t se_mask[4] = {0}; /* 4 is the max # of SEs */
 
-	if (q->cu_mask_count == 0)
+	if (!minfo || (minfo->update_flag != UPDATE_FLAG_CU_MASK) ||
+	    !minfo->cu_mask.ptr)
 		return;
 
 	mqd_symmetrically_map_cu_mask(mm,
-		q->cu_mask, q->cu_mask_count, se_mask);
+		minfo->cu_mask.ptr, minfo->cu_mask.count, se_mask);
 
 	m = get_mqd(mqd);
 	m->compute_static_thread_mgmt_se0 = se_mask[0];
@@ -117,7 +118,7 @@ static void init_mqd(struct mqd_manager *mm, void **mqd,
 
 	m->cp_hqd_quantum = 1 << CP_HQD_QUANTUM__QUANTUM_EN__SHIFT |
 			1 << CP_HQD_QUANTUM__QUANTUM_SCALE__SHIFT |
-			10 << CP_HQD_QUANTUM__QUANTUM_DURATION__SHIFT;
+			1 << CP_HQD_QUANTUM__QUANTUM_DURATION__SHIFT;
 
 	set_priority(m, q);
 	m->cp_hqd_eop_rptr = 1 << CP_HQD_EOP_RPTR__INIT_FETCHER__SHIFT;
@@ -150,7 +151,7 @@ static void init_mqd(struct mqd_manager *mm, void **mqd,
 	*mqd = m;
 	if (gart_addr)
 		*gart_addr = addr;
-	mm->update_mqd(mm, m, q);
+	mm->update_mqd(mm, m, q, NULL);
 }
 
 static int load_mqd(struct mqd_manager *mm, void *mqd,
@@ -161,14 +162,14 @@ static int load_mqd(struct mqd_manager *mm, void *mqd,
 	uint32_t wptr_shift = (p->format == KFD_QUEUE_FORMAT_AQL ? 4 : 0);
 	uint32_t wptr_mask = (uint32_t)((p->queue_size / 4) - 1);
 
-	return mm->dev->kfd2kgd->hqd_load(mm->dev->kgd, mqd, pipe_id, queue_id,
+	return mm->dev->kfd2kgd->hqd_load(mm->dev->adev, mqd, pipe_id, queue_id,
 					  (uint32_t __user *)p->write_ptr,
 					  wptr_shift, wptr_mask, mms);
 }
 
 static void __update_mqd(struct mqd_manager *mm, void *mqd,
-			struct queue_properties *q, unsigned int mtype,
-			unsigned int atc_bit)
+			struct queue_properties *q, struct mqd_update_info *minfo,
+			unsigned int mtype, unsigned int atc_bit)
 {
 	struct vi_mqd *m;
 
@@ -230,7 +231,7 @@ static void __update_mqd(struct mqd_manager *mm, void *mqd,
 			atc_bit << CP_HQD_CTX_SAVE_CONTROL__ATC__SHIFT |
 			mtype << CP_HQD_CTX_SAVE_CONTROL__MTYPE__SHIFT;
 
-	update_cu_mask(mm, mqd, q);
+	update_cu_mask(mm, mqd, minfo);
 	set_priority(m, q);
 
 	q->is_active = QUEUE_IS_ACTIVE(*q);
@@ -238,15 +239,24 @@ static void __update_mqd(struct mqd_manager *mm, void *mqd,
 
 
 static void update_mqd(struct mqd_manager *mm, void *mqd,
-			struct queue_properties *q)
+			struct queue_properties *q,
+			struct mqd_update_info *minfo)
 {
-	__update_mqd(mm, mqd, q, MTYPE_CC, 1);
+	__update_mqd(mm, mqd, q, minfo, MTYPE_CC, 1);
+}
+
+static uint32_t read_doorbell_id(void *mqd)
+{
+	struct vi_mqd *m = (struct vi_mqd *)mqd;
+
+	return m->queue_doorbell_id0;
 }
 
 static void update_mqd_tonga(struct mqd_manager *mm, void *mqd,
-			struct queue_properties *q)
+			struct queue_properties *q,
+			struct mqd_update_info *minfo)
 {
-	__update_mqd(mm, mqd, q, MTYPE_UC, 0);
+	__update_mqd(mm, mqd, q, minfo, MTYPE_UC, 0);
 }
 
 static int destroy_mqd(struct mqd_manager *mm, void *mqd,
@@ -255,7 +265,7 @@ static int destroy_mqd(struct mqd_manager *mm, void *mqd,
 			uint32_t queue_id)
 {
 	return mm->dev->kfd2kgd->hqd_destroy
-		(mm->dev->kgd, mqd, type, timeout,
+		(mm->dev->adev, mqd, type, timeout,
 		pipe_id, queue_id);
 }
 
@@ -270,7 +280,7 @@ static bool is_occupied(struct mqd_manager *mm, void *mqd,
 			uint32_t queue_id)
 {
 	return mm->dev->kfd2kgd->hqd_is_occupied(
-		mm->dev->kgd, queue_address,
+		mm->dev->adev, queue_address,
 		pipe_id, queue_id);
 }
 
@@ -310,13 +320,10 @@ static void init_mqd_hiq(struct mqd_manager *mm, void **mqd,
 }
 
 static void update_mqd_hiq(struct mqd_manager *mm, void *mqd,
-			struct queue_properties *q)
+			struct queue_properties *q,
+			struct mqd_update_info *minfo)
 {
-	struct vi_mqd *m;
-	__update_mqd(mm, mqd, q, MTYPE_UC, 0);
-
-	m = get_mqd(mqd);
-	m->cp_hqd_vmid = q->vmid;
+	__update_mqd(mm, mqd, q, minfo, MTYPE_UC, 0);
 }
 
 static void init_mqd_sdma(struct mqd_manager *mm, void **mqd,
@@ -333,20 +340,21 @@ static void init_mqd_sdma(struct mqd_manager *mm, void **mqd,
 	if (gart_addr)
 		*gart_addr = mqd_mem_obj->gpu_addr;
 
-	mm->update_mqd(mm, m, q);
+	mm->update_mqd(mm, m, q, NULL);
 }
 
 static int load_mqd_sdma(struct mqd_manager *mm, void *mqd,
 		uint32_t pipe_id, uint32_t queue_id,
 		struct queue_properties *p, struct mm_struct *mms)
 {
-	return mm->dev->kfd2kgd->hqd_sdma_load(mm->dev->kgd, mqd,
+	return mm->dev->kfd2kgd->hqd_sdma_load(mm->dev->adev, mqd,
 					       (uint32_t __user *)p->write_ptr,
 					       mms);
 }
 
 static void update_mqd_sdma(struct mqd_manager *mm, void *mqd,
-		struct queue_properties *q)
+			struct queue_properties *q,
+			struct mqd_update_info *minfo)
 {
 	struct vi_sdma_mqd *m;
 
@@ -381,14 +389,14 @@ static int destroy_mqd_sdma(struct mqd_manager *mm, void *mqd,
 		unsigned int timeout, uint32_t pipe_id,
 		uint32_t queue_id)
 {
-	return mm->dev->kfd2kgd->hqd_sdma_destroy(mm->dev->kgd, mqd, timeout);
+	return mm->dev->kfd2kgd->hqd_sdma_destroy(mm->dev->adev, mqd, timeout);
 }
 
 static bool is_occupied_sdma(struct mqd_manager *mm, void *mqd,
 		uint64_t queue_address, uint32_t pipe_id,
 		uint32_t queue_id)
 {
-	return mm->dev->kfd2kgd->hqd_sdma_is_occupied(mm->dev->kgd, mqd);
+	return mm->dev->kfd2kgd->hqd_sdma_is_occupied(mm->dev->adev, mqd);
 }
 
 #if defined(CONFIG_DEBUG_FS)
@@ -425,7 +433,6 @@ struct mqd_manager *mqd_manager_init_vi(enum KFD_MQD_TYPE type,
 
 	switch (type) {
 	case KFD_MQD_TYPE_CP:
-	case KFD_MQD_TYPE_COMPUTE:
 		mqd->allocate_mqd = allocate_mqd;
 		mqd->init_mqd = init_mqd;
 		mqd->free_mqd = free_mqd;
@@ -451,9 +458,10 @@ struct mqd_manager *mqd_manager_init_vi(enum KFD_MQD_TYPE type,
 #if defined(CONFIG_DEBUG_FS)
 		mqd->debugfs_show_mqd = debugfs_show_mqd;
 #endif
+		mqd->read_doorbell_id = read_doorbell_id;
 		break;
 	case KFD_MQD_TYPE_DIQ:
-		mqd->allocate_mqd = allocate_hiq_mqd;
+		mqd->allocate_mqd = allocate_mqd;
 		mqd->init_mqd = init_mqd_hiq;
 		mqd->free_mqd = free_mqd;
 		mqd->load_mqd = load_mqd;
@@ -494,7 +502,7 @@ struct mqd_manager *mqd_manager_init_vi_tonga(enum KFD_MQD_TYPE type,
 	mqd = mqd_manager_init_vi(type, dev);
 	if (!mqd)
 		return NULL;
-	if ((type == KFD_MQD_TYPE_CP) || (type == KFD_MQD_TYPE_COMPUTE))
+	if (type == KFD_MQD_TYPE_CP)
 		mqd->update_mqd = update_mqd_tonga;
 	return mqd;
 }

@@ -32,7 +32,7 @@ struct brcmf_proto {
 			    u8 peer[ETH_ALEN]);
 	void (*add_tdls_peer)(struct brcmf_pub *drvr, int ifidx,
 			      u8 peer[ETH_ALEN]);
-	void (*rxreorder)(struct brcmf_if *ifp, struct sk_buff *skb);
+	void (*rxreorder)(struct brcmf_if *ifp, struct sk_buff *skb, bool inirq);
 	void (*add_if)(struct brcmf_if *ifp);
 	void (*del_if)(struct brcmf_if *ifp);
 	void (*reset_if)(struct brcmf_if *ifp);
@@ -43,8 +43,7 @@ struct brcmf_proto {
 
 
 int brcmf_proto_attach(struct brcmf_pub *drvr);
-void brcmf_proto_detach_pre_delif(struct brcmf_pub *drvr);
-void brcmf_proto_detach_post_delif(struct brcmf_pub *drvr);
+void brcmf_proto_detach(struct brcmf_pub *drvr);
 
 static inline int brcmf_proto_hdrpull(struct brcmf_pub *drvr, bool do_fws,
 				      struct sk_buff *skb,
@@ -110,9 +109,9 @@ static inline bool brcmf_proto_is_reorder_skb(struct sk_buff *skb)
 }
 
 static inline void
-brcmf_proto_rxreorder(struct brcmf_if *ifp, struct sk_buff *skb)
+brcmf_proto_rxreorder(struct brcmf_if *ifp, struct sk_buff *skb, bool inirq)
 {
-	ifp->drvr->proto->rxreorder(ifp, skb);
+	ifp->drvr->proto->rxreorder(ifp, skb, inirq);
 }
 
 static inline void

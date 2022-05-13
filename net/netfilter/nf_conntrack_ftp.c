@@ -162,7 +162,7 @@ static int try_rfc959(const char *data, size_t dlen,
 	if (length == 0)
 		return 0;
 
-	cmd->u3.ip =  htonl((array[0] << 24) | (array[1] << 16) |
+	cmd->u3.ip = htonl((array[0] << 24) | (array[1] << 16) |
 				    (array[2] << 8) | array[3]);
 	cmd->u.tcp.port = htons((array[4] << 8) | array[5]);
 	return length;
@@ -382,7 +382,7 @@ static int help(struct sk_buff *skb,
 	int ret;
 	u32 seq;
 	int dir = CTINFO2DIR(ctinfo);
-	unsigned int uninitialized_var(matchlen), uninitialized_var(matchoff);
+	unsigned int matchlen, matchoff;
 	struct nf_ct_ftp_master *ct_ftp_info = nfct_help_data(ct);
 	struct nf_conntrack_expect *exp;
 	union nf_inet_addr *daddr;
@@ -413,7 +413,10 @@ static int help(struct sk_buff *skb,
 
 	spin_lock_bh(&nf_ftp_lock);
 	fb_ptr = skb_header_pointer(skb, dataoff, datalen, ftp_buffer);
-	BUG_ON(fb_ptr == NULL);
+	if (!fb_ptr) {
+		spin_unlock_bh(&nf_ftp_lock);
+		return NF_ACCEPT;
+	}
 
 	ends_in_nl = (fb_ptr[datalen - 1] == '\n');
 	seq = ntohl(th->seq) + datalen;

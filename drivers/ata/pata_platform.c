@@ -24,6 +24,8 @@
 #define DRV_VERSION "1.2"
 
 static int pio_mask = 1;
+module_param(pio_mask, int, 0);
+MODULE_PARM_DESC(pio_mask, "PIO modes supported, mode 0 only by default");
 
 /*
  * Provide our own set_mode() as we don't want to change anything that has
@@ -126,6 +128,8 @@ int __pata_platform_probe(struct device *dev, struct resource *io_res,
 	ap = host->ports[0];
 
 	ap->ops = devm_kzalloc(dev, sizeof(*ap->ops), GFP_KERNEL);
+	if (!ap->ops)
+		return -ENOMEM;
 	ap->ops->inherits = &ata_sff_port_ops;
 	ap->ops->cable_detect = ata_cable_unknown;
 	ap->ops->set_mode = pata_platform_set_mode;
@@ -232,8 +236,6 @@ static struct platform_driver pata_platform_driver = {
 };
 
 module_platform_driver(pata_platform_driver);
-
-module_param(pio_mask, int, 0);
 
 MODULE_AUTHOR("Paul Mundt");
 MODULE_DESCRIPTION("low-level driver for platform device ATA");

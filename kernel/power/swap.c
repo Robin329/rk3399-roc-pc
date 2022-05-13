@@ -36,6 +36,8 @@
 
 #define HIBERNATE_SIG	"S1SUSPEND"
 
+u32 swsusp_hardware_signature;
+
 /*
  * When reading an {un,}compressed image, we may restore pages in place,
  * in which case some architectures need these pages cleaning before they
@@ -104,7 +106,8 @@ struct swap_map_handle {
 
 struct swsusp_header {
 	char reserved[PAGE_SIZE - 20 - sizeof(sector_t) - sizeof(int) -
-	              sizeof(u32)];
+	              sizeof(u32) - sizeof(u32)];
+	u32	hw_sig;
 	u32	crc32;
 	sector_t image;
 	unsigned int flags;	/* Flags to pass to the "boot" kernel */
@@ -226,6 +229,7 @@ struct hib_bio_batch {
 	atomic_t		count;
 	wait_queue_head_t	wait;
 	blk_status_t		error;
+	struct blk_plug		plug;
 };
 
 static void hib_init_batch(struct hib_bio_batch *hb)
@@ -233,6 +237,12 @@ static void hib_init_batch(struct hib_bio_batch *hb)
 	atomic_set(&hb->count, 0);
 	init_waitqueue_head(&hb->wait);
 	hb->error = BLK_STS_OK;
+	blk_start_plug(&hb->plug);
+}
+
+static void hib_finish_batch(struct hib_bio_batch *hb)
+{
+	blk_finish_plug(&hb->plug);
 }
 
 static void hib_end_io(struct bio *bio)
@@ -292,8 +302,12 @@ static int hib_submit_io(int op, int op_flags, pgoff_t page_off, void *addr,
 	return error;
 }
 
-static blk_status_t hib_wait_io(struct hib_bio_batch *hb)
+static int hib_wait_io(struct hib_bio_batch *hb)
 {
+	/*
+	 * We are relying on the behavior of blk_plug that a thread with
+	 * a plug will flush the plug list before sleeping.
+	 */
 	wait_event(hb->wait, atomic_read(&hb->count) == 0);
 	return blk_status_to_errno(hb->error);
 }
@@ -301,7 +315,6 @@ static blk_status_t hib_wait_io(struct hib_bio_batch *hb)
 /*
  * Saving part
  */
-
 static int mark_swapfiles(struct swap_map_handle *handle, unsigned int flags)
 {
 	int error;
@@ -313,6 +326,10 @@ static int mark_swapfiles(struct swap_map_handle *handle, unsigned int flags)
 		memcpy(swsusp_header->orig_sig,swsusp_header->sig, 10);
 		memcpy(swsusp_header->sig, HIBERNATE_SIG, 10);
 		swsusp_header->image = handle->first_sector;
+		if (swsusp_hardware_signature) {
+			swsusp_header->hw_sig = swsusp_hardware_signature;
+			flags |= SF_HW_SIG;
+		}
 		swsusp_header->flags = flags;
 		if (flags & SF_CRC32_MODE)
 			swsusp_header->crc32 = handle->crc32;
@@ -335,26 +352,23 @@ static int swsusp_swap_check(void)
 {
 	int res;
 
-	res = swap_type_of(swsusp_resume_device, swsusp_resume_block,
-			&hib_resume_bdev);
+	if (swsusp_resume_device)
+		res = swap_type_of(swsusp_resume_device, swsusp_resume_block);
+	else
+		res = find_first_swap(&swsusp_resume_device);
 	if (res < 0)
 		return res;
-
 	root_swap = res;
-	res = blkdev_get(hib_resume_bdev, FMODE_WRITE, NULL);
-	if (res)
-		return res;
+
+	hib_resume_bdev = blkdev_get_by_dev(swsusp_resume_device, FMODE_WRITE,
+			NULL);
+	if (IS_ERR(hib_resume_bdev))
+		return PTR_ERR(hib_resume_bdev);
 
 	res = set_blocksize(hib_resume_bdev, PAGE_SIZE);
 	if (res < 0)
 		blkdev_put(hib_resume_bdev, FMODE_WRITE);
 
-	/*
-	 * Update the resume device to the one actually used,
-	 * so the test_resume mode can use it in case it is
-	 * invoked from hibernate() to test the snapshot.
-	 */
-	swsusp_resume_device = hib_resume_bdev->bd_dev;
 	return res;
 }
 
@@ -489,10 +503,10 @@ static int swap_writer_finish(struct swap_map_handle *handle,
 		unsigned int flags, int error)
 {
 	if (!error) {
-		flush_swap_writer(handle);
 		pr_info("S");
 		error = mark_swapfiles(handle, flags);
 		pr_cont("|\n");
+		flush_swap_writer(handle);
 	}
 
 	if (error)
@@ -561,6 +575,7 @@ static int save_image(struct swap_map_handle *handle,
 		nr_pages++;
 	}
 	err2 = hib_wait_io(&hb);
+	hib_finish_batch(&hb);
 	stop = ktime_get();
 	if (!ret)
 		ret = err2;
@@ -696,22 +711,19 @@ static int save_image_lzo(struct swap_map_handle *handle,
 		goto out_clean;
 	}
 
-	data = vmalloc(array_size(nr_threads, sizeof(*data)));
+	data = vzalloc(array_size(nr_threads, sizeof(*data)));
 	if (!data) {
 		pr_err("Failed to allocate LZO data\n");
 		ret = -ENOMEM;
 		goto out_clean;
 	}
-	for (thr = 0; thr < nr_threads; thr++)
-		memset(&data[thr], 0, offsetof(struct cmp_data, go));
 
-	crc = kmalloc(sizeof(*crc), GFP_KERNEL);
+	crc = kzalloc(sizeof(*crc), GFP_KERNEL);
 	if (!crc) {
 		pr_err("Failed to allocate crc\n");
 		ret = -ENOMEM;
 		goto out_clean;
 	}
-	memset(crc, 0, offsetof(struct crc_data, go));
 
 	/*
 	 * Start the compression threads.
@@ -854,6 +866,7 @@ out_finish:
 		pr_info("Image saving done\n");
 	swsusp_show_speed(start, stop, nr_to_write, "Wrote");
 out_clean:
+	hib_finish_batch(&hb);
 	if (crc) {
 		if (crc->thr)
 			kthread_stop(crc->thr);
@@ -874,7 +887,7 @@ out_clean:
  *	enough_swap - Make sure we have enough swap to save the image.
  *
  *	Returns TRUE or FALSE after checking the total amount of swap
- *	space avaiable from the resume partition.
+ *	space available from the resume partition.
  */
 
 static int enough_swap(unsigned int nr_pages)
@@ -1084,6 +1097,7 @@ static int load_image(struct swap_map_handle *handle,
 		nr_pages++;
 	}
 	err2 = hib_wait_io(&hb);
+	hib_finish_batch(&hb);
 	stop = ktime_get();
 	if (!ret)
 		ret = err2;
@@ -1114,7 +1128,7 @@ struct dec_data {
 };
 
 /**
- * Deompression function that runs in its own thread.
+ * Decompression function that runs in its own thread.
  */
 static int lzo_decompress_threadfn(void *data)
 {
@@ -1187,22 +1201,19 @@ static int load_image_lzo(struct swap_map_handle *handle,
 		goto out_clean;
 	}
 
-	data = vmalloc(array_size(nr_threads, sizeof(*data)));
+	data = vzalloc(array_size(nr_threads, sizeof(*data)));
 	if (!data) {
 		pr_err("Failed to allocate LZO data\n");
 		ret = -ENOMEM;
 		goto out_clean;
 	}
-	for (thr = 0; thr < nr_threads; thr++)
-		memset(&data[thr], 0, offsetof(struct dec_data, go));
 
-	crc = kmalloc(sizeof(*crc), GFP_KERNEL);
+	crc = kzalloc(sizeof(*crc), GFP_KERNEL);
 	if (!crc) {
 		pr_err("Failed to allocate crc\n");
 		ret = -ENOMEM;
 		goto out_clean;
 	}
-	memset(crc, 0, offsetof(struct crc_data, go));
 
 	clean_pages_on_decompress = true;
 
@@ -1447,6 +1458,7 @@ out_finish:
 	}
 	swsusp_show_speed(start, stop, nr_to_read, "Read");
 out_clean:
+	hib_finish_batch(&hb);
 	for (i = 0; i < ring_size; i++)
 		free_page((unsigned long)page[i]);
 	if (crc) {
@@ -1509,9 +1521,10 @@ end:
 int swsusp_check(void)
 {
 	int error;
+	void *holder;
 
 	hib_resume_bdev = blkdev_get_by_dev(swsusp_resume_device,
-					    FMODE_READ, NULL);
+					    FMODE_READ | FMODE_EXCL, &holder);
 	if (!IS_ERR(hib_resume_bdev)) {
 		set_blocksize(hib_resume_bdev, PAGE_SIZE);
 		clear_page(swsusp_header);
@@ -1530,10 +1543,16 @@ int swsusp_check(void)
 		} else {
 			error = -EINVAL;
 		}
+		if (!error && swsusp_header->flags & SF_HW_SIG &&
+		    swsusp_header->hw_sig != swsusp_hardware_signature) {
+			pr_info("Suspend image hardware signature mismatch (%08x now %08x); aborting resume.\n",
+				swsusp_header->hw_sig, swsusp_hardware_signature);
+			error = -EINVAL;
+		}
 
 put:
 		if (error)
-			blkdev_put(hib_resume_bdev, FMODE_READ);
+			blkdev_put(hib_resume_bdev, FMODE_READ | FMODE_EXCL);
 		else
 			pr_debug("Image signature found, resuming\n");
 	} else {
@@ -1590,7 +1609,7 @@ int swsusp_unmark(void)
 }
 #endif
 
-static int swsusp_header_init(void)
+static int __init swsusp_header_init(void)
 {
 	swsusp_header = (struct swsusp_header*) __get_free_page(GFP_KERNEL);
 	if (!swsusp_header)

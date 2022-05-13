@@ -8,8 +8,8 @@
 
 struct perf_session;
 union perf_event;
-struct perf_evlist;
-struct perf_evsel;
+struct evlist;
+struct evsel;
 struct perf_sample;
 struct perf_tool;
 struct machine;
@@ -17,14 +17,14 @@ struct ordered_events;
 
 typedef int (*event_sample)(struct perf_tool *tool, union perf_event *event,
 			    struct perf_sample *sample,
-			    struct perf_evsel *evsel, struct machine *machine);
+			    struct evsel *evsel, struct machine *machine);
 
 typedef int (*event_op)(struct perf_tool *tool, union perf_event *event,
 			struct perf_sample *sample, struct machine *machine);
 
 typedef int (*event_attr_op)(struct perf_tool *tool,
 			     union perf_event *event,
-			     struct perf_evlist **pevlist);
+			     struct evlist **pevlist);
 
 typedef int (*event_op2)(struct perf_session *session, union perf_event *event);
 typedef s64 (*event_op3)(struct perf_session *session, union perf_event *event);
@@ -46,17 +46,20 @@ struct perf_tool {
 			mmap2,
 			comm,
 			namespaces,
+			cgroup,
 			fork,
 			exit,
 			lost,
 			lost_samples,
 			aux,
 			itrace_start,
+			aux_output_hw_id,
 			context_switch,
 			throttle,
 			unthrottle,
 			ksymbol,
-			bpf_event;
+			bpf,
+			text_poke;
 
 	event_attr_op	attr;
 	event_attr_op	event_update;
@@ -78,6 +81,7 @@ struct perf_tool {
 	bool		ordered_events;
 	bool		ordering_requires_timestamps;
 	bool		namespace_events;
+	bool		cgroup_events;
 	bool		no_warn;
 	enum show_feature_header show_feat_hdr;
 };

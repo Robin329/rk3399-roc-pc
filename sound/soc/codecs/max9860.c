@@ -334,7 +334,7 @@ static int max9860_hw_params(struct snd_pcm_substream *substream,
 			return -EINVAL;
 		}
 		ifc1a ^= MAX9860_WCI;
-		/* fall through */
+		fallthrough;
 	case SND_SOC_DAIFMT_IB_NF:
 		ifc1a ^= MAX9860_DBCI;
 		ifc1b ^= MAX9860_ABCI;
@@ -489,7 +489,7 @@ static struct snd_soc_dai_driver max9860_dai = {
 			   SNDRV_PCM_FMTBIT_S32_LE,
 	},
 	.ops = &max9860_dai_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 
 static int max9860_set_bias_level(struct snd_soc_component *component,
@@ -606,12 +606,9 @@ static int max9860_probe(struct i2c_client *i2c)
 		return -ENOMEM;
 
 	max9860->dvddio = devm_regulator_get(dev, "DVDDIO");
-	if (IS_ERR(max9860->dvddio)) {
-		ret = PTR_ERR(max9860->dvddio);
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Failed to get DVDDIO supply: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(max9860->dvddio))
+		return dev_err_probe(dev, PTR_ERR(max9860->dvddio),
+				     "Failed to get DVDDIO supply\n");
 
 	max9860->dvddio_nb.notifier_call = max9860_dvddio_event;
 
@@ -643,8 +640,7 @@ static int max9860_probe(struct i2c_client *i2c)
 
 	if (IS_ERR(mclk)) {
 		ret = PTR_ERR(mclk);
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Failed to get MCLK: %d\n", ret);
+		dev_err_probe(dev, ret, "Failed to get MCLK\n");
 		goto err_regulator;
 	}
 

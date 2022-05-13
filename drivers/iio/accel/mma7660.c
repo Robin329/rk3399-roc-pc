@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/**
+/*
  * Freescale MMA7660FC 3-Axis Accelerometer
  *
  * Copyright (c) 2016, Intel Corporation.
@@ -188,7 +188,6 @@ static int mma7660_probe(struct i2c_client *client,
 	mutex_init(&data->lock);
 	data->mode = MMA7660_MODE_STANDBY;
 
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->info = &mma7660_info;
 	indio_dev->name = MMA7660_DRIVER_NAME;
 	indio_dev->modes = INDIO_DIRECT_MODE;
@@ -211,10 +210,16 @@ static int mma7660_probe(struct i2c_client *client,
 static int mma7660_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
+	int ret;
 
 	iio_device_unregister(indio_dev);
 
-	return mma7660_set_mode(iio_priv(indio_dev), MMA7660_MODE_STANDBY);
+	ret = mma7660_set_mode(iio_priv(indio_dev), MMA7660_MODE_STANDBY);
+	if (ret)
+		dev_warn(&client->dev, "Failed to put device in stand-by mode (%pe), ignoring\n",
+			 ERR_PTR(ret));
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -255,7 +260,7 @@ static const struct of_device_id mma7660_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, mma7660_of_match);
 
-static const struct acpi_device_id mma7660_acpi_id[] = {
+static const struct acpi_device_id __maybe_unused mma7660_acpi_id[] = {
 	{"MMA7660", 0},
 	{}
 };

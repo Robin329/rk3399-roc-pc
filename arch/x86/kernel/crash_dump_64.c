@@ -10,6 +10,7 @@
 #include <linux/crash_dump.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
+#include <linux/cc_platform.h>
 
 static ssize_t __copy_oldmem_page(unsigned long pfn, char *buf, size_t csize,
 				  unsigned long offset, int userbuf,
@@ -69,4 +70,10 @@ ssize_t copy_oldmem_page_encrypted(unsigned long pfn, char *buf, size_t csize,
 				   unsigned long offset, int userbuf)
 {
 	return __copy_oldmem_page(pfn, buf, csize, offset, userbuf, true);
+}
+
+ssize_t elfcorehdr_read(char *buf, size_t count, u64 *ppos)
+{
+	return read_from_oldmem(buf, count, ppos, 0,
+				cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT));
 }

@@ -149,8 +149,7 @@ static void ftgpio_gpio_irq_handler(struct irq_desc *desc)
 	stat = readl(g->base + GPIO_INT_STAT_RAW);
 	if (stat)
 		for_each_set_bit(offset, &stat, gc->ngpio)
-			generic_handle_irq(irq_find_mapping(gc->irq.domain,
-							    offset));
+			generic_handle_domain_irq(gc->irq.domain, offset);
 
 	chained_irq_exit(irqchip, desc);
 }
@@ -193,7 +192,7 @@ static int ftgpio_gpio_set_config(struct gpio_chip *gc, unsigned int offset,
 	if (val == deb_div) {
 		/*
 		 * The debounce timer happens to already be set to the
-		 * desireable value, what a coincidence! We can just enable
+		 * desirable value, what a coincidence! We can just enable
 		 * debounce on this GPIO line and return. This happens more
 		 * often than you think, for example when all GPIO keys
 		 * on a system are requesting the same debounce interval.
@@ -290,15 +289,13 @@ static int ftgpio_gpio_probe(struct platform_device *pdev)
 	girq->num_parents = 1;
 	girq->parents = devm_kcalloc(dev, 1, sizeof(*girq->parents),
 				     GFP_KERNEL);
-	if (!girq->parents)
-		return -ENOMEM;
+	if (!girq->parents) {
+		ret = -ENOMEM;
+		goto dis_clk;
+	}
 	girq->default_type = IRQ_TYPE_NONE;
 	girq->handler = handle_bad_irq;
 	girq->parents[0] = irq;
-
-	ret = devm_gpiochip_add_data(dev, &g->gc, g);
-	if (ret)
-		goto dis_clk;
 
 	/* Disable, unmask and clear all interrupts */
 	writel(0x0, g->base + GPIO_INT_EN);
@@ -307,6 +304,10 @@ static int ftgpio_gpio_probe(struct platform_device *pdev)
 
 	/* Clear any use of debounce */
 	writel(0x0, g->base + GPIO_DEBOUNCE_EN);
+
+	ret = devm_gpiochip_add_data(dev, &g->gc, g);
+	if (ret)
+		goto dis_clk;
 
 	platform_set_drvdata(pdev, g);
 	dev_info(dev, "FTGPIO010 @%p registered\n", g->base);

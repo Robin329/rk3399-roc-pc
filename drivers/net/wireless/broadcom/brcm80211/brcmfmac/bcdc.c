@@ -397,9 +397,9 @@ brcmf_proto_bcdc_add_tdls_peer(struct brcmf_pub *drvr, int ifidx,
 }
 
 static void brcmf_proto_bcdc_rxreorder(struct brcmf_if *ifp,
-				       struct sk_buff *skb)
+				       struct sk_buff *skb, bool inirq)
 {
-	brcmf_fws_rxreorder(ifp, skb);
+	brcmf_fws_rxreorder(ifp, skb, inirq);
 }
 
 static void
@@ -479,18 +479,11 @@ fail:
 	return -ENOMEM;
 }
 
-void brcmf_proto_bcdc_detach_pre_delif(struct brcmf_pub *drvr)
-{
-	struct brcmf_bcdc *bcdc = drvr->proto->pd;
-
-	brcmf_fws_detach_pre_delif(bcdc->fws);
-}
-
-void brcmf_proto_bcdc_detach_post_delif(struct brcmf_pub *drvr)
+void brcmf_proto_bcdc_detach(struct brcmf_pub *drvr)
 {
 	struct brcmf_bcdc *bcdc = drvr->proto->pd;
 
 	drvr->proto->pd = NULL;
-	brcmf_fws_detach_post_delif(bcdc->fws);
+	brcmf_fws_detach(bcdc->fws);
 	kfree(bcdc);
 }

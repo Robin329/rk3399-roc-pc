@@ -114,7 +114,7 @@ asmlinkage void __exception_irq_entry ixp4xx_handle_irq(struct pt_regs *regs)
 
 	status = __raw_readl(ixi->irqbase + IXP4XX_ICIP);
 	for_each_set_bit(i, &status, 32)
-		handle_domain_irq(ixi->domain, i, regs);
+		generic_handle_domain_irq(ixi->domain, i);
 
 	/*
 	 * IXP465/IXP435 has an upper IRQ status register
@@ -122,7 +122,7 @@ asmlinkage void __exception_irq_entry ixp4xx_handle_irq(struct pt_regs *regs)
 	if (ixi->is_356) {
 		status = __raw_readl(ixi->irqbase + IXP4XX_ICIP2);
 		for_each_set_bit(i, &status, 32)
-			handle_domain_irq(ixi->domain, i + 32, regs);
+			generic_handle_domain_irq(ixi->domain, i + 32);
 	}
 }
 
@@ -319,7 +319,7 @@ void __init ixp4xx_irq_init(resource_size_t irqbase,
 		pr_crit("IXP4XX: could not ioremap interrupt controller\n");
 		return;
 	}
-	fwnode = irq_domain_alloc_fwnode(base);
+	fwnode = irq_domain_alloc_fwnode(&irqbase);
 	if (!fwnode) {
 		pr_crit("IXP4XX: no domain handle\n");
 		return;

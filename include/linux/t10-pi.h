@@ -3,7 +3,7 @@
 #define _LINUX_T10_PI_H
 
 #include <linux/types.h>
-#include <linux/blkdev.h>
+#include <linux/blk-mq.h>
 
 /*
  * A T10 PI-capable target device can be formatted with different
@@ -52,19 +52,5 @@ extern const struct blk_integrity_profile t10_pi_type1_crc;
 extern const struct blk_integrity_profile t10_pi_type1_ip;
 extern const struct blk_integrity_profile t10_pi_type3_crc;
 extern const struct blk_integrity_profile t10_pi_type3_ip;
-
-#ifdef CONFIG_BLK_DEV_INTEGRITY
-extern void t10_pi_prepare(struct request *rq, u8 protection_type);
-extern void t10_pi_complete(struct request *rq, u8 protection_type,
-			    unsigned int intervals);
-#else
-static inline void t10_pi_complete(struct request *rq, u8 protection_type,
-				   unsigned int intervals)
-{
-}
-static inline void t10_pi_prepare(struct request *rq, u8 protection_type)
-{
-}
-#endif
 
 #endif

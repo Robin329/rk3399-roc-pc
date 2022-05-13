@@ -92,7 +92,7 @@ struct pi433_device {
 	u32			rx_bytes_to_drop;
 	u32			rx_bytes_dropped;
 	unsigned int		rx_position;
-	struct mutex		rx_lock;
+	struct mutex		rx_lock; /* protects rx_* variable accesses */
 	wait_queue_head_t	rx_wait_queue;
 
 	/* fifo wait queue */
@@ -649,7 +649,7 @@ pi433_tx_thread(void *data)
 		/* clear fifo, set fifo threshold, set payload length */
 		retval = rf69_set_mode(spi, standby); /* this clears the fifo */
 		if (retval < 0)
-			return retval;
+			goto abort;
 
 		if (device->rx_active && !rx_interrupted) {
 			/*
@@ -661,33 +661,33 @@ pi433_tx_thread(void *data)
 
 		retval = rf69_set_fifo_threshold(spi, FIFO_THRESHOLD);
 		if (retval < 0)
-			return retval;
+			goto abort;
 		if (tx_cfg.enable_length_byte == OPTION_ON) {
 			retval = rf69_set_payload_length(spi, size * tx_cfg.repetitions);
 			if (retval < 0)
-				return retval;
+				goto abort;
 		} else {
 			retval = rf69_set_payload_length(spi, 0);
 			if (retval < 0)
-				return retval;
+				goto abort;
 		}
 
 		/* configure the rf chip */
 		retval = rf69_set_tx_cfg(device, &tx_cfg);
 		if (retval < 0)
-			return retval;
+			goto abort;
 
 		/* enable fifo level interrupt */
 		retval = rf69_set_dio_mapping(spi, DIO1, DIO_FIFO_LEVEL);
 		if (retval < 0)
-			return retval;
+			goto abort;
 		device->irq_state[DIO1] = DIO_FIFO_LEVEL;
 		irq_set_irq_type(device->irq_num[DIO1], IRQ_TYPE_EDGE_FALLING);
 
 		/* enable packet sent interrupt */
 		retval = rf69_set_dio_mapping(spi, DIO0, DIO_PACKET_SENT);
 		if (retval < 0)
-			return retval;
+			goto abort;
 		device->irq_state[DIO0] = DIO_PACKET_SENT;
 		irq_set_irq_type(device->irq_num[DIO0], IRQ_TYPE_EDGE_RISING);
 		enable_irq(device->irq_num[DIO0]); /* was disabled by rx active check */
@@ -695,7 +695,7 @@ pi433_tx_thread(void *data)
 		/* enable transmission */
 		retval = rf69_set_mode(spi, transmit);
 		if (retval < 0)
-			return retval;
+			goto abort;
 
 		/* transfer this msg (and repetitions) to chip fifo */
 		device->free_in_fifo = FIFO_SIZE;
@@ -742,7 +742,7 @@ pi433_tx_thread(void *data)
 		dev_dbg(device->dev, "thread: Packet sent. Set mode to stby.");
 		retval = rf69_set_mode(spi, standby);
 		if (retval < 0)
-			return retval;
+			goto abort;
 
 		/* everything sent? */
 		if (kfifo_is_empty(&device->tx_fifo)) {
@@ -928,16 +928,6 @@ pi433_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	return 0;
 }
 
-#ifdef CONFIG_COMPAT
-static long
-pi433_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
-{
-	return pi433_ioctl(filp, cmd, (unsigned long)compat_ptr(arg));
-}
-#else
-#define pi433_compat_ioctl NULL
-#endif /* CONFIG_COMPAT */
-
 /*-------------------------------------------------------------------------*/
 
 static int pi433_open(struct inode *inode, struct file *filp)
@@ -1094,7 +1084,7 @@ static const struct file_operations pi433_fops = {
 	.write =	pi433_write,
 	.read =		pi433_read,
 	.unlocked_ioctl = pi433_ioctl,
-	.compat_ioctl = pi433_compat_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
 	.open =		pi433_open,
 	.release =	pi433_release,
 	.llseek =	no_llseek,
@@ -1240,6 +1230,7 @@ static int pi433_probe(struct spi_device *spi)
 	device->cdev = cdev_alloc();
 	if (!device->cdev) {
 		dev_dbg(device->dev, "allocation of cdev failed");
+		retval = -ENOMEM;
 		goto cdev_failed;
 	}
 	device->cdev->owner = THIS_MODULE;

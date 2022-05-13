@@ -13,7 +13,6 @@
 #include <linux/regmap.h>
 #include <linux/spi/spi.h>
 
-#include "ksz_priv.h"
 #include "ksz_common.h"
 
 #define SPI_ADDR_SHIFT			24
@@ -25,6 +24,7 @@ KSZ_REGMAP_TABLE(ksz9477, 32, SPI_ADDR_SHIFT,
 
 static int ksz9477_spi_probe(struct spi_device *spi)
 {
+	struct regmap_config rc;
 	struct ksz_device *dev;
 	int i, ret;
 
@@ -33,8 +33,9 @@ static int ksz9477_spi_probe(struct spi_device *spi)
 		return -ENOMEM;
 
 	for (i = 0; i < ARRAY_SIZE(ksz9477_regmap_config); i++) {
-		dev->regmap[i] = devm_regmap_init_spi(spi,
-					&ksz9477_regmap_config[i]);
+		rc = ksz9477_regmap_config[i];
+		rc.lock_arg = &dev->regmap_mutex;
+		dev->regmap[i] = devm_regmap_init_spi(spi, &rc);
 		if (IS_ERR(dev->regmap[i])) {
 			ret = PTR_ERR(dev->regmap[i]);
 			dev_err(&spi->dev,
@@ -46,6 +47,12 @@ static int ksz9477_spi_probe(struct spi_device *spi)
 
 	if (spi->dev.platform_data)
 		dev->pdata = spi->dev.platform_data;
+
+	/* setup spi */
+	spi->mode = SPI_MODE_3;
+	ret = spi_setup(spi);
+	if (ret)
+		return ret;
 
 	ret = ksz9477_switch_register(dev);
 
@@ -65,6 +72,8 @@ static int ksz9477_spi_remove(struct spi_device *spi)
 	if (dev)
 		ksz_switch_remove(dev);
 
+	spi_set_drvdata(spi, NULL);
+
 	return 0;
 }
 
@@ -72,8 +81,10 @@ static void ksz9477_spi_shutdown(struct spi_device *spi)
 {
 	struct ksz_device *dev = spi_get_drvdata(spi);
 
-	if (dev && dev->dev_ops->shutdown)
-		dev->dev_ops->shutdown(dev);
+	if (dev)
+		dsa_switch_shutdown(dev->ds);
+
+	spi_set_drvdata(spi, NULL);
 }
 
 static const struct of_device_id ksz9477_dt_ids[] = {
@@ -82,9 +93,21 @@ static const struct of_device_id ksz9477_dt_ids[] = {
 	{ .compatible = "microchip,ksz9893" },
 	{ .compatible = "microchip,ksz9563" },
 	{ .compatible = "microchip,ksz8563" },
+	{ .compatible = "microchip,ksz9567" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, ksz9477_dt_ids);
+
+static const struct spi_device_id ksz9477_spi_ids[] = {
+	{ "ksz9477" },
+	{ "ksz9897" },
+	{ "ksz9893" },
+	{ "ksz9563" },
+	{ "ksz8563" },
+	{ "ksz9567" },
+	{ },
+};
+MODULE_DEVICE_TABLE(spi, ksz9477_spi_ids);
 
 static struct spi_driver ksz9477_spi_driver = {
 	.driver = {
@@ -92,6 +115,7 @@ static struct spi_driver ksz9477_spi_driver = {
 		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(ksz9477_dt_ids),
 	},
+	.id_table = ksz9477_spi_ids,
 	.probe	= ksz9477_spi_probe,
 	.remove	= ksz9477_spi_remove,
 	.shutdown = ksz9477_spi_shutdown,
@@ -99,6 +123,12 @@ static struct spi_driver ksz9477_spi_driver = {
 
 module_spi_driver(ksz9477_spi_driver);
 
+MODULE_ALIAS("spi:ksz9477");
+MODULE_ALIAS("spi:ksz9897");
+MODULE_ALIAS("spi:ksz9893");
+MODULE_ALIAS("spi:ksz9563");
+MODULE_ALIAS("spi:ksz8563");
+MODULE_ALIAS("spi:ksz9567");
 MODULE_AUTHOR("Woojung Huh <Woojung.Huh@microchip.com>");
 MODULE_DESCRIPTION("Microchip KSZ9477 Series Switch SPI access Driver");
 MODULE_LICENSE("GPL");

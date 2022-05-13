@@ -55,7 +55,7 @@ static const struct i2c_device_id s35390a_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, s35390a_id);
 
-static const struct of_device_id s35390a_of_match[] = {
+static const __maybe_unused struct of_device_id s35390a_of_match[] = {
 	{ .compatible = "s35390a" },
 	{ .compatible = "sii,s35390a" },
 	{ }
@@ -285,9 +285,6 @@ static int s35390a_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 		alm->time.tm_min, alm->time.tm_hour, alm->time.tm_mday,
 		alm->time.tm_mon, alm->time.tm_year, alm->time.tm_wday);
 
-	if (alm->time.tm_sec != 0)
-		dev_warn(&client->dev, "Alarms are only supported on a per minute basis!\n");
-
 	/* disable interrupt (which deasserts the irq line) */
 	err = s35390a_set_reg(s35390a, S35390A_CMD_STATUS2, &sts, sizeof(sts));
 	if (err < 0)
@@ -423,8 +420,6 @@ static const struct rtc_class_ops s35390a_rtc_ops = {
 	.ioctl          = s35390a_rtc_ioctl,
 };
 
-static struct i2c_driver s35390a_driver;
-
 static int s35390a_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
@@ -434,37 +429,36 @@ static int s35390a_probe(struct i2c_client *client,
 	char buf, status1;
 	struct device *dev = &client->dev;
 
-	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
-		err = -ENODEV;
-		goto exit;
-	}
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
+		return -ENODEV;
 
 	s35390a = devm_kzalloc(dev, sizeof(struct s35390a), GFP_KERNEL);
-	if (!s35390a) {
-		err = -ENOMEM;
-		goto exit;
-	}
+	if (!s35390a)
+		return -ENOMEM;
 
 	s35390a->client[0] = client;
 	i2c_set_clientdata(client, s35390a);
 
 	/* This chip uses multiple addresses, use dummy devices for them */
 	for (i = 1; i < 8; ++i) {
-		s35390a->client[i] = i2c_new_dummy(client->adapter,
-					client->addr + i);
-		if (!s35390a->client[i]) {
+		s35390a->client[i] = devm_i2c_new_dummy_device(dev,
+							       client->adapter,
+							       client->addr + i);
+		if (IS_ERR(s35390a->client[i])) {
 			dev_err(dev, "Address %02x unavailable\n",
 				client->addr + i);
-			err = -EBUSY;
-			goto exit_dummy;
+			return PTR_ERR(s35390a->client[i]);
 		}
 	}
 
+	s35390a->rtc = devm_rtc_allocate_device(dev);
+	if (IS_ERR(s35390a->rtc))
+		return PTR_ERR(s35390a->rtc);
+
 	err_read = s35390a_read_status(s35390a, &status1);
 	if (err_read < 0) {
-		err = err_read;
 		dev_err(dev, "error resetting chip\n");
-		goto exit_dummy;
+		return err_read;
 	}
 
 	if (status1 & S35390A_FLAG_24H)
@@ -478,53 +472,29 @@ static int s35390a_probe(struct i2c_client *client,
 		err = s35390a_set_reg(s35390a, S35390A_CMD_STATUS2, &buf, 1);
 		if (err < 0) {
 			dev_err(dev, "error disabling alarm");
-			goto exit_dummy;
+			return err;
 		}
 	} else {
 		err = s35390a_disable_test_mode(s35390a);
 		if (err < 0) {
 			dev_err(dev, "error disabling test mode\n");
-			goto exit_dummy;
+			return err;
 		}
 	}
 
 	device_set_wakeup_capable(dev, 1);
 
-	s35390a->rtc = devm_rtc_device_register(dev, s35390a_driver.driver.name,
-						&s35390a_rtc_ops, THIS_MODULE);
+	s35390a->rtc->ops = &s35390a_rtc_ops;
+	s35390a->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
+	s35390a->rtc->range_max = RTC_TIMESTAMP_END_2099;
 
-	if (IS_ERR(s35390a->rtc)) {
-		err = PTR_ERR(s35390a->rtc);
-		goto exit_dummy;
-	}
-
-	/* supports per-minute alarms only, therefore set uie_unsupported */
-	s35390a->rtc->uie_unsupported = 1;
+	set_bit(RTC_FEATURE_ALARM_RES_MINUTE, s35390a->rtc->features);
+	clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, s35390a->rtc->features );
 
 	if (status1 & S35390A_FLAG_INT2)
 		rtc_update_irq(s35390a->rtc, 1, RTC_AF);
 
-	return 0;
-
-exit_dummy:
-	for (i = 1; i < 8; ++i)
-		if (s35390a->client[i])
-			i2c_unregister_device(s35390a->client[i]);
-
-exit:
-	return err;
-}
-
-static int s35390a_remove(struct i2c_client *client)
-{
-	unsigned int i;
-	struct s35390a *s35390a = i2c_get_clientdata(client);
-
-	for (i = 1; i < 8; ++i)
-		if (s35390a->client[i])
-			i2c_unregister_device(s35390a->client[i]);
-
-	return 0;
+	return devm_rtc_register_device(s35390a->rtc);
 }
 
 static struct i2c_driver s35390a_driver = {
@@ -533,7 +503,6 @@ static struct i2c_driver s35390a_driver = {
 		.of_match_table = of_match_ptr(s35390a_of_match),
 	},
 	.probe		= s35390a_probe,
-	.remove		= s35390a_remove,
 	.id_table	= s35390a_id,
 };
 

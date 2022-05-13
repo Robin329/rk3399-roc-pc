@@ -277,6 +277,8 @@ The ``i_flags`` field is a combination of these values:
      - This is a huge file (EXT4\_HUGE\_FILE\_FL).
    * - 0x80000
      - Inode uses extents (EXT4\_EXTENTS\_FL).
+   * - 0x100000
+     - Verity protected file (EXT4\_VERITY\_FL).
    * - 0x200000
      - Inode stores a large extended attribute value in its data blocks
        (EXT4\_EA\_INODE\_FL).
@@ -299,9 +301,9 @@ The ``i_flags`` field is a combination of these values:
      - Reserved for ext4 library (EXT4\_RESERVED\_FL).
    * -
      - Aggregate flags:
-   * - 0x4BDFFF
+   * - 0x705BDFFF
      - User-visible flags.
-   * - 0x4B80FF
+   * - 0x604BC0FF
      - User-modifiable flags. Note that while EXT4\_JOURNAL\_DATA\_FL and
        EXT4\_EXTENTS\_FL can be set with setattr, they are not in the kernel's
        EXT4\_FL\_USER\_MODIFIABLE mask, since it needs to handle the setting of
@@ -470,8 +472,8 @@ inode, which allows struct ext4\_inode to grow for a new kernel without
 having to upgrade all of the on-disk inodes. Access to fields beyond
 EXT2\_GOOD\_OLD\_INODE\_SIZE should be verified to be within
 ``i_extra_isize``. By default, ext4 inode records are 256 bytes, and (as
-of October 2013) the inode structure is 156 bytes
-(``i_extra_isize = 28``). The extra space between the end of the inode
+of August 2019) the inode structure is 160 bytes
+(``i_extra_isize = 32``). The extra space between the end of the inode
 structure and the end of the inode record can be used to store extended
 attributes. Each inode record can be as large as the filesystem block
 size, though this is not terribly efficient.
@@ -496,11 +498,11 @@ structure -- inode change time (ctime), access time (atime), data
 modification time (mtime), and deletion time (dtime). The four fields
 are 32-bit signed integers that represent seconds since the Unix epoch
 (1970-01-01 00:00:00 GMT), which means that the fields will overflow in
-January 2038. For inodes that are not linked from any directory but are
-still open (orphan inodes), the dtime field is overloaded for use with
-the orphan list. The superblock field ``s_last_orphan`` points to the
-first inode in the orphan list; dtime is then the number of the next
-orphaned inode, or zero if there are no more orphans.
+January 2038. If the filesystem does not have orphan_file feature, inodes
+that are not linked from any directory but are still open (orphan inodes) have
+the dtime field overloaded for use with the orphan list. The superblock field
+``s_last_orphan`` points to the first inode in the orphan list; dtime is then
+the number of the next orphaned inode, or zero if there are no more orphans.
 
 If the inode structure size ``sb->s_inode_size`` is larger than 128
 bytes and the ``i_inode_extra`` field is large enough to encompass the

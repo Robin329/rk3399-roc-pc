@@ -4,7 +4,7 @@
 
 NetApp provides this source code under the GPL v2 License.
 The GPL v2 license is available at
-http://opensource.org/licenses/gpl-license.php.
+https://opensource.org/licenses/gpl-license.php.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -62,6 +62,11 @@ static inline int xprt_setup_backchannel(struct rpc_xprt *xprt,
 					 unsigned int min_reqs)
 {
 	return 0;
+}
+
+static inline void xprt_destroy_backchannel(struct rpc_xprt *xprt,
+					    unsigned int max_reqs)
+{
 }
 
 static inline bool svc_is_backchannel(const struct svc_rqst *rqstp)

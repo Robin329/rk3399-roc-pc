@@ -142,7 +142,7 @@ struct vsp1_dl_body_pool {
 };
 
 /**
- * struct vsp1_cmd_pool - Display List commands pool
+ * struct vsp1_dl_cmd_pool - Display List commands pool
  * @dma: DMA address of the entries
  * @size: size of the full DMA memory pool in bytes
  * @mem: CPU memory pointer for the pool
@@ -430,6 +430,8 @@ vsp1_dl_cmd_pool_create(struct vsp1_device *vsp1, enum vsp1_extcmd_type type,
 	pool = kzalloc(sizeof(*pool), GFP_KERNEL);
 	if (!pool)
 		return NULL;
+
+	pool->vsp1 = vsp1;
 
 	spin_lock_init(&pool->lock);
 	INIT_LIST_HEAD(&pool->free);

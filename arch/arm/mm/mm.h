@@ -2,8 +2,7 @@
 #ifdef CONFIG_MMU
 #include <linux/list.h>
 #include <linux/vmalloc.h>
-
-#include <asm/pgtable.h>
+#include <linux/pgtable.h>
 
 /* the upper-most page table pointer */
 extern pmd_t *top_pmd;
@@ -36,11 +35,6 @@ static inline pte_t get_top_pte(unsigned long va)
 	return *ptep;
 }
 
-static inline pmd_t *pmd_off_k(unsigned long virt)
-{
-	return pmd_offset(pud_offset(pgd_offset_k(virt), virt), virt);
-}
-
 struct mem_type {
 	pteval_t prot_pte;
 	pteval_t prot_pte_s2;
@@ -69,9 +63,6 @@ extern void __flush_dcache_page(struct address_space *mapping, struct page *page
 /* mapping type (attributes) for permanent static mappings */
 #define VM_ARM_MTYPE(mt)		((mt) << 20)
 #define VM_ARM_MTYPE_MASK	(0x1f << 20)
-
-/* consistent regions used by dma_alloc_attrs() */
-#define VM_ARM_DMA_CONSISTENT	0x20000000
 
 
 struct static_vm {

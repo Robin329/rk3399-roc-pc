@@ -45,9 +45,9 @@
 #include "dcn10_cm_common.h"
 #include "clk_mgr.h"
 
-static unsigned int snprintf_count(char *pBuf, unsigned int bufSize, char *fmt, ...)
+unsigned int snprintf_count(char *pBuf, unsigned int bufSize, char *fmt, ...)
 {
-	unsigned int ret_vsnprintf;
+	int ret_vsnprintf;
 	unsigned int chars_printed;
 
 	va_list args;

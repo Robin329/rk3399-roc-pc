@@ -24,9 +24,8 @@
 
 #include "radeon.h"
 #include "radeon_asic.h"
+#include "r600.h"
 #include "r600d.h"
-
-u32 r600_gpu_check_soft_reset(struct radeon_device *rdev);
 
 /*
  * DMA
@@ -444,7 +443,7 @@ void r600_dma_ring_ib_execute(struct radeon_device *rdev, struct radeon_ib *ib)
 struct radeon_fence *r600_copy_dma(struct radeon_device *rdev,
 				   uint64_t src_offset, uint64_t dst_offset,
 				   unsigned num_gpu_pages,
-				   struct reservation_object *resv)
+				   struct dma_resv *resv)
 {
 	struct radeon_fence *fence;
 	struct radeon_sync sync;

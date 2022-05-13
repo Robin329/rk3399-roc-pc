@@ -510,7 +510,7 @@ static int pata_macio_cable_detect(struct ata_port *ap)
 	return ATA_CBL_PATA40;
 }
 
-static void pata_macio_qc_prep(struct ata_queued_cmd *qc)
+static enum ata_completion_errors pata_macio_qc_prep(struct ata_queued_cmd *qc)
 {
 	unsigned int write = (qc->tf.flags & ATA_TFLAG_WRITE);
 	struct ata_port *ap = qc->ap;
@@ -523,7 +523,7 @@ static void pata_macio_qc_prep(struct ata_queued_cmd *qc)
 		   __func__, qc, qc->flags, write, qc->dev->devno);
 
 	if (!(qc->flags & ATA_QCFLAG_DMAMAP))
-		return;
+		return AC_ERR_OK;
 
 	table = (struct dbdma_cmd *) priv->dma_table_cpu;
 
@@ -568,6 +568,8 @@ static void pata_macio_qc_prep(struct ata_queued_cmd *qc)
 	table->command = cpu_to_le16(DBDMA_STOP);
 
 	dev_dbgdma(priv->dev, "%s: %d DMA list entries\n", __func__, pi);
+
+	return AC_ERR_OK;
 }
 
 
@@ -912,7 +914,7 @@ static int pata_macio_do_resume(struct pata_macio_priv *priv)
 #endif /* CONFIG_PM_SLEEP */
 
 static struct scsi_host_template pata_macio_sht = {
-	ATA_BASE_SHT(DRV_NAME),
+	__ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= MAX_DCMDS,
 	/* We may not need that strict one */
 	.dma_boundary		= ATA_DMA_BOUNDARY,
@@ -921,6 +923,9 @@ static struct scsi_host_template pata_macio_sht = {
 	 */
 	.max_segment_size	= MAX_DBDMA_SEG,
 	.slave_configure	= pata_macio_slave_config,
+	.sdev_groups		= ata_common_sdev_groups,
+	.can_queue		= ATA_DEF_QUEUE,
+	.tag_alloc_policy	= BLK_TAG_ALLOC_RR,
 };
 
 static struct ata_port_operations pata_macio_ops = {
@@ -977,7 +982,7 @@ static void pata_macio_invariants(struct pata_macio_priv *priv)
 	priv->aapl_bus_id =  bidp ? *bidp : 0;
 
 	/* Fixup missing Apple bus ID in case of media-bay */
-	if (priv->mediabay && bidp == 0)
+	if (priv->mediabay && !bidp)
 		priv->aapl_bus_id = 1;
 }
 

@@ -62,7 +62,6 @@ sint r8712_endofpktfile(struct pkt_file *pfile)
 	return (pfile->pkt_len == 0);
 }
 
-
 void r8712_set_qos(struct pkt_file *ppktfile, struct pkt_attrib *pattrib)
 {
 	struct ethhdr etherhdr;
@@ -160,7 +159,7 @@ int r8712_xmit_entry(_pkt *pkt, struct  net_device *netdev)
 	if (!xmitframe)
 		goto _xmit_entry_drop;
 
-	if ((!r8712_update_attrib(adapter, pkt, &xmitframe->attrib)))
+	if (r8712_update_attrib(adapter, pkt, &xmitframe->attrib))
 		goto _xmit_entry_drop;
 
 	adapter->ledpriv.LedControlHandler(adapter, LED_CTL_TX);

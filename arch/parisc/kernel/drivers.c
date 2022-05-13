@@ -30,6 +30,7 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/export.h>
+#include <linux/dma-map-ops.h>
 #include <asm/hardware.h>
 #include <asm/io.h>
 #include <asm/pdc.h>
@@ -132,14 +133,13 @@ static int parisc_driver_probe(struct device *dev)
 	return rc;
 }
 
-static int __exit parisc_driver_remove(struct device *dev)
+static void __exit parisc_driver_remove(struct device *dev)
 {
 	struct parisc_device *pa_dev = to_parisc_device(dev);
 	struct parisc_driver *pa_drv = to_parisc_driver(dev->driver);
+
 	if (pa_drv->remove)
 		pa_drv->remove(pa_dev);
-
-	return 0;
 }
 	
 
@@ -810,7 +810,7 @@ EXPORT_SYMBOL(device_to_hwpath);
 static void walk_native_bus(unsigned long io_io_low, unsigned long io_io_high,
                             struct device *parent);
 
-static void walk_lower_bus(struct parisc_device *dev)
+static void __init walk_lower_bus(struct parisc_device *dev)
 {
 	unsigned long io_io_low, io_io_high;
 
@@ -889,8 +889,8 @@ static void print_parisc_device(struct parisc_device *dev)
 	static int count;
 
 	print_pa_hwpath(dev, hw_path);
-	pr_info("%d. %s at 0x%px [%s] { %d, 0x%x, 0x%.3x, 0x%.5x }",
-		++count, dev->name, (void*) dev->hpa.start, hw_path, dev->id.hw_type,
+	pr_info("%d. %s at %pap [%s] { %d, 0x%x, 0x%.3x, 0x%.5x }",
+		++count, dev->name, &(dev->hpa.start), hw_path, dev->id.hw_type,
 		dev->id.hversion_rev, dev->id.hversion, dev->id.sversion);
 
 	if (dev->num_addrs) {

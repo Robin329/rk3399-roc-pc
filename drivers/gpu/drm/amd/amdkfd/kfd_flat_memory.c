@@ -308,7 +308,7 @@
  * 16MB are reserved for kernel use (CWSR trap handler and kernel IB
  * for now).
  */
-#define SVM_USER_BASE 0x1000000ull
+#define SVM_USER_BASE (u64)(KFD_CWSR_TBA_TMA_SIZE + 2*PAGE_SIZE)
 #define SVM_CWSR_BASE (SVM_USER_BASE - KFD_CWSR_TBA_TMA_SIZE)
 #define SVM_IB_BASE   (SVM_CWSR_BASE - PAGE_SIZE)
 
@@ -316,12 +316,12 @@ static void kfd_init_apertures_vi(struct kfd_process_device *pdd, uint8_t id)
 {
 	/*
 	 * node id couldn't be 0 - the three MSB bits of
-	 * aperture shoudn't be 0
+	 * aperture shouldn't be 0
 	 */
 	pdd->lds_base = MAKE_LDS_APP_BASE_VI();
 	pdd->lds_limit = MAKE_LDS_APP_LIMIT(pdd->lds_base);
 
-	if (!pdd->dev->device_info->needs_iommu_device) {
+	if (!pdd->dev->use_iommu_v2) {
 		/* dGPUs: SVM aperture starting at 0
 		 * with small reserved space for kernel.
 		 * Set them to CANONICAL addresses.
@@ -369,8 +369,13 @@ int kfd_init_apertures(struct kfd_process *process)
 
 	/*Iterating over all devices*/
 	while (kfd_topology_enum_kfd_devices(id, &dev) == 0) {
-		if (!dev) {
-			id++; /* Skip non GPU devices */
+		if (!dev || kfd_devcgroup_check_permission(dev)) {
+			/* Skip non GPU devices and devices to which the
+			 * current process have no access to. Access can be
+			 * limited by placing the process in a specific
+			 * cgroup hierarchy
+			 */
+			id++;
 			continue;
 		}
 
@@ -389,7 +394,7 @@ int kfd_init_apertures(struct kfd_process *process)
 			pdd->gpuvm_base = pdd->gpuvm_limit = 0;
 			pdd->scratch_base = pdd->scratch_limit = 0;
 		} else {
-			switch (dev->device_info->asic_family) {
+			switch (dev->adev->asic_type) {
 			case CHIP_KAVERI:
 			case CHIP_HAWAII:
 			case CHIP_CARRIZO:
@@ -401,20 +406,17 @@ int kfd_init_apertures(struct kfd_process *process)
 			case CHIP_VEGAM:
 				kfd_init_apertures_vi(pdd, id);
 				break;
-			case CHIP_VEGA10:
-			case CHIP_VEGA12:
-			case CHIP_VEGA20:
-			case CHIP_RAVEN:
-			case CHIP_NAVI10:
-				kfd_init_apertures_v9(pdd, id);
-				break;
 			default:
-				WARN(1, "Unexpected ASIC family %u",
-				     dev->device_info->asic_family);
-				return -EINVAL;
+				if (KFD_GC_VERSION(dev) >= IP_VERSION(9, 0, 1))
+					kfd_init_apertures_v9(pdd, id);
+				else {
+					WARN(1, "Unexpected ASIC family %u",
+					     dev->adev->asic_type);
+					return -EINVAL;
+				}
 			}
 
-			if (!dev->device_info->needs_iommu_device) {
+			if (!dev->use_iommu_v2) {
 				/* dGPUs: the reserved space for kernel
 				 * before SVM
 				 */

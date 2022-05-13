@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Advanced Micro Devices, Inc.
+ * Copyright 2019 Raptor Engineering, LLC
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -53,13 +54,9 @@
  * remain as-is as it provides us with a guarantee from HW that it is correct.
  */
 
-#ifdef CONFIG_DRM_AMD_DC_DCN2_0
 /* Defaults from spreadsheet rev#247.
  * RV2 delta: dram_clock_change_latency, max_num_dpp
  */
-#else
-/* Defaults from spreadsheet rev#247 */
-#endif
 const struct dcn_soc_bounding_box dcn10_soc_defaults = {
 		/* latencies */
 		.sr_exit_time = 17, /*us*/
@@ -239,6 +236,7 @@ static enum dcn_bw_defs tl_pixel_format_to_bw_defs(enum surface_pixel_format for
 	case SURFACE_PIXEL_FORMAT_GRPH_ABGR2101010_XR_BIAS:
 		return dcn_bw_rgb_sub_32;
 	case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616:
+	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616:
 	case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616F:
 	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616F:
 		return dcn_bw_rgb_sub_64;
@@ -305,10 +303,17 @@ static void pipe_ctx_to_e2e_pipe_params (
 		struct _vcs_dpi_display_pipe_params_st *input)
 {
 	input->src.is_hsplit = false;
-	if (pipe->top_pipe != NULL && pipe->top_pipe->plane_state == pipe->plane_state)
+
+	/* stereo can never be split */
+	if (pipe->plane_state->stereo_format == PLANE_STEREO_FORMAT_SIDE_BY_SIDE ||
+	    pipe->plane_state->stereo_format == PLANE_STEREO_FORMAT_TOP_AND_BOTTOM) {
+		/* reset the split group if it was already considered split. */
+		input->src.hsplit_grp = pipe->pipe_idx;
+	} else if (pipe->top_pipe != NULL && pipe->top_pipe->plane_state == pipe->plane_state) {
 		input->src.is_hsplit = true;
-	else if (pipe->bottom_pipe != NULL && pipe->bottom_pipe->plane_state == pipe->plane_state)
+	} else if (pipe->bottom_pipe != NULL && pipe->bottom_pipe->plane_state == pipe->plane_state) {
 		input->src.is_hsplit = true;
+	}
 
 	if (pipe->plane_res.dpp->ctx->dc->debug.optimized_watermark) {
 		/*
@@ -329,7 +334,7 @@ static void pipe_ctx_to_e2e_pipe_params (
 			dcc_support_pixel_format(pipe->plane_state->format, &bpe) ? 1 : 0;
 	}
 	input->src.dcc_rate            = 1;
-	input->src.meta_pitch          = pipe->plane_state->dcc.grph.meta_pitch;
+	input->src.meta_pitch          = pipe->plane_state->dcc.meta_pitch;
 	input->src.source_scan         = dm_horz;
 	input->src.sw_mode             = pipe->plane_state->tiling_info.gfx9.swizzle;
 
@@ -371,9 +376,15 @@ static void pipe_ctx_to_e2e_pipe_params (
 		input->src.viewport_height_c   = input->src.viewport_height / 2;
 		break;
 	case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616:
+	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616:
 	case SURFACE_PIXEL_FORMAT_GRPH_ARGB16161616F:
 	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616F:
 		input->src.source_format = dm_444_64;
+		input->src.viewport_width_c    = input->src.viewport_width;
+		input->src.viewport_height_c   = input->src.viewport_height;
+		break;
+	case SURFACE_PIXEL_FORMAT_GRPH_RGBE_ALPHA:
+		input->src.source_format = dm_rgbe_alpha;
 		input->src.viewport_width_c    = input->src.viewport_width;
 		input->src.viewport_height_c   = input->src.viewport_height;
 		break;
@@ -448,9 +459,9 @@ static void dcn_bw_calc_rq_dlg_ttu(
 	struct _vcs_dpi_display_dlg_regs_st *dlg_regs = &pipe->dlg_regs;
 	struct _vcs_dpi_display_ttu_regs_st *ttu_regs = &pipe->ttu_regs;
 	struct _vcs_dpi_display_rq_regs_st *rq_regs = &pipe->rq_regs;
-	struct _vcs_dpi_display_rq_params_st rq_param = {0};
-	struct _vcs_dpi_display_dlg_sys_params_st dlg_sys_param = {0};
-	struct _vcs_dpi_display_e2e_pipe_params_st input = { { { 0 } } };
+	struct _vcs_dpi_display_rq_params_st *rq_param = &pipe->dml_rq_param;
+	struct _vcs_dpi_display_dlg_sys_params_st *dlg_sys_param = &pipe->dml_dlg_sys_param;
+	struct _vcs_dpi_display_e2e_pipe_params_st *input = &pipe->dml_input;
 	float total_active_bw = 0;
 	float total_prefetch_bw = 0;
 	int total_flip_bytes = 0;
@@ -459,45 +470,47 @@ static void dcn_bw_calc_rq_dlg_ttu(
 	memset(dlg_regs, 0, sizeof(*dlg_regs));
 	memset(ttu_regs, 0, sizeof(*ttu_regs));
 	memset(rq_regs, 0, sizeof(*rq_regs));
+	memset(rq_param, 0, sizeof(*rq_param));
+	memset(dlg_sys_param, 0, sizeof(*dlg_sys_param));
+	memset(input, 0, sizeof(*input));
 
 	for (i = 0; i < number_of_planes; i++) {
 		total_active_bw += v->read_bandwidth[i];
 		total_prefetch_bw += v->prefetch_bandwidth[i];
 		total_flip_bytes += v->total_immediate_flip_bytes[i];
 	}
-	dlg_sys_param.total_flip_bw = v->return_bw - dcn_bw_max2(total_active_bw, total_prefetch_bw);
-	if (dlg_sys_param.total_flip_bw < 0.0)
-		dlg_sys_param.total_flip_bw = 0;
+	dlg_sys_param->total_flip_bw = v->return_bw - dcn_bw_max2(total_active_bw, total_prefetch_bw);
+	if (dlg_sys_param->total_flip_bw < 0.0)
+		dlg_sys_param->total_flip_bw = 0;
 
-	dlg_sys_param.t_mclk_wm_us = v->dram_clock_change_watermark;
-	dlg_sys_param.t_sr_wm_us = v->stutter_enter_plus_exit_watermark;
-	dlg_sys_param.t_urg_wm_us = v->urgent_watermark;
-	dlg_sys_param.t_extra_us = v->urgent_extra_latency;
-	dlg_sys_param.deepsleep_dcfclk_mhz = v->dcf_clk_deep_sleep;
-	dlg_sys_param.total_flip_bytes = total_flip_bytes;
+	dlg_sys_param->t_mclk_wm_us = v->dram_clock_change_watermark;
+	dlg_sys_param->t_sr_wm_us = v->stutter_enter_plus_exit_watermark;
+	dlg_sys_param->t_urg_wm_us = v->urgent_watermark;
+	dlg_sys_param->t_extra_us = v->urgent_extra_latency;
+	dlg_sys_param->deepsleep_dcfclk_mhz = v->dcf_clk_deep_sleep;
+	dlg_sys_param->total_flip_bytes = total_flip_bytes;
 
-	pipe_ctx_to_e2e_pipe_params(pipe, &input.pipe);
-	input.clks_cfg.dcfclk_mhz = v->dcfclk;
-	input.clks_cfg.dispclk_mhz = v->dispclk;
-	input.clks_cfg.dppclk_mhz = v->dppclk;
-	input.clks_cfg.refclk_mhz = dc->res_pool->ref_clocks.dchub_ref_clock_inKhz / 1000.0;
-	input.clks_cfg.socclk_mhz = v->socclk;
-	input.clks_cfg.voltage = v->voltage_level;
+	pipe_ctx_to_e2e_pipe_params(pipe, &input->pipe);
+	input->clks_cfg.dcfclk_mhz = v->dcfclk;
+	input->clks_cfg.dispclk_mhz = v->dispclk;
+	input->clks_cfg.dppclk_mhz = v->dppclk;
+	input->clks_cfg.refclk_mhz = dc->res_pool->ref_clocks.dchub_ref_clock_inKhz / 1000.0;
+	input->clks_cfg.socclk_mhz = v->socclk;
+	input->clks_cfg.voltage = v->voltage_level;
 //	dc->dml.logger = pool->base.logger;
-	input.dout.output_format = (v->output_format[in_idx] == dcn_bw_420) ? dm_420 : dm_444;
-	input.dout.output_type  = (v->output[in_idx] == dcn_bw_hdmi) ? dm_hdmi : dm_dp;
+	input->dout.output_format = (v->output_format[in_idx] == dcn_bw_420) ? dm_420 : dm_444;
+	input->dout.output_type  = (v->output[in_idx] == dcn_bw_hdmi) ? dm_hdmi : dm_dp;
 	//input[in_idx].dout.output_standard;
 
 	/*todo: soc->sr_enter_plus_exit_time??*/
-	dlg_sys_param.t_srx_delay_us = dc->dcn_ip->dcfclk_cstate_latency / v->dcf_clk_deep_sleep;
 
-	dml1_rq_dlg_get_rq_params(dml, &rq_param, input.pipe.src);
+	dml1_rq_dlg_get_rq_params(dml, rq_param, &input->pipe.src);
 	dml1_extract_rq_regs(dml, rq_regs, rq_param);
 	dml1_rq_dlg_get_dlg_params(
 			dml,
 			dlg_regs,
 			ttu_regs,
-			rq_param.dlg,
+			&rq_param->dlg,
 			dlg_sys_param,
 			input,
 			true,
@@ -626,7 +639,7 @@ static bool dcn_bw_apply_registry_override(struct dc *dc)
 {
 	bool updated = false;
 
-	kernel_fpu_begin();
+	DC_FP_START();
 	if ((int)(dc->dcn_soc->sr_exit_time * 1000) != dc->debug.sr_exit_time_ns
 			&& dc->debug.sr_exit_time_ns) {
 		updated = true;
@@ -662,7 +675,7 @@ static bool dcn_bw_apply_registry_override(struct dc *dc)
 		dc->dcn_soc->dram_clock_change_latency =
 				dc->debug.dram_clock_change_latency_ns / 1000.0;
 	}
-	kernel_fpu_end();
+	DC_FP_END();
 
 	return updated;
 }
@@ -693,6 +706,26 @@ static void hack_bounding_box(struct dcn_bw_internal_vars *v,
 		struct dc_debug_options *dbg,
 		struct dc_state *context)
 {
+	int i;
+
+	for (i = 0; i < MAX_PIPES; i++) {
+		struct pipe_ctx *pipe = &context->res_ctx.pipe_ctx[i];
+
+		/**
+		 * Workaround for avoiding pipe-split in cases where we'd split
+		 * planes that are too small, resulting in splits that aren't
+		 * valid for the scaler.
+		 */
+		if (pipe->plane_state &&
+		    (pipe->plane_state->dst_rect.width <= 16 ||
+		     pipe->plane_state->dst_rect.height <= 16 ||
+		     pipe->plane_state->src_rect.width <= 16 ||
+		     pipe->plane_state->src_rect.height <= 16)) {
+			hack_disable_optional_pipe_split(v);
+			return;
+		}
+	}
+
 	if (dbg->pipe_split_policy == MPC_SPLIT_AVOID)
 		hack_disable_optional_pipe_split(v);
 
@@ -705,7 +738,33 @@ static void hack_bounding_box(struct dcn_bw_internal_vars *v,
 		hack_force_pipe_split(v, context->streams[0]->timing.pix_clk_100hz);
 }
 
-bool dcn_validate_bandwidth(
+static unsigned int get_highest_allowed_voltage_level(uint32_t chip_family,
+						      uint32_t hw_internal_rev,
+						      uint32_t pci_revision_id)
+{
+	/* for low power RV2 variants, the highest voltage level we want is 0 */
+	if ((chip_family == FAMILY_RV) &&
+	     ASICREV_IS_RAVEN2(hw_internal_rev))
+		switch (pci_revision_id) {
+		case PRID_DALI_DE:
+		case PRID_DALI_DF:
+		case PRID_DALI_E3:
+		case PRID_DALI_E4:
+		case PRID_POLLOCK_94:
+		case PRID_POLLOCK_95:
+		case PRID_POLLOCK_E9:
+		case PRID_POLLOCK_EA:
+		case PRID_POLLOCK_EB:
+			return 0;
+		default:
+			break;
+		}
+
+	/* we are ok with all levels */
+	return 4;
+}
+
+bool dcn10_validate_bandwidth(
 		struct dc *dc,
 		struct dc_state *context,
 		bool fast_validate)
@@ -731,7 +790,8 @@ bool dcn_validate_bandwidth(
 		dcn_bw_sync_calcs_and_dml(dc);
 
 	memset(v, 0, sizeof(*v));
-	kernel_fpu_begin();
+	DC_FP_START();
+
 	v->sr_exit_time = dc->dcn_soc->sr_exit_time;
 	v->sr_enter_plus_exit_time = dc->dcn_soc->sr_enter_plus_exit_time;
 	v->urgent_latency = dc->dcn_soc->urgent_latency;
@@ -1263,12 +1323,15 @@ bool dcn_validate_bandwidth(
 	bw_limit = dc->dcn_soc->percent_disp_bw_limit * v->fabric_and_dram_bandwidth_vmax0p9;
 	bw_limit_pass = (v->total_data_read_bandwidth / 1000.0) < bw_limit;
 
-	kernel_fpu_end();
+	DC_FP_END();
 
 	PERFORMANCE_TRACE_END();
 	BW_VAL_TRACE_FINISH();
 
-	if (bw_limit_pass && v->voltage_level != 5)
+	if (bw_limit_pass && v->voltage_level <= get_highest_allowed_voltage_level(
+							dc->ctx->asic_id.chip_family,
+							dc->ctx->asic_id.hw_internal_rev,
+							dc->ctx->asic_id.pci_revision_id))
 		return true;
 	else
 		return false;
@@ -1426,37 +1489,49 @@ void dcn_bw_update_from_pplib(struct dc *dc)
 	struct dc_context *ctx = dc->ctx;
 	struct dm_pp_clock_levels_with_voltage fclks = {0}, dcfclks = {0};
 	bool res;
+	unsigned vmin0p65_idx, vmid0p72_idx, vnom0p8_idx, vmax0p9_idx;
 
 	/* TODO: This is not the proper way to obtain fabric_and_dram_bandwidth, should be min(fclk, memclk) */
 	res = dm_pp_get_clock_levels_by_type_with_voltage(
 			ctx, DM_PP_CLOCK_TYPE_FCLK, &fclks);
 
-	kernel_fpu_begin();
+	DC_FP_START();
 
 	if (res)
 		res = verify_clock_values(&fclks);
 
 	if (res) {
-		ASSERT(fclks.num_levels >= 3);
-		dc->dcn_soc->fabric_and_dram_bandwidth_vmin0p65 = 32 * (fclks.data[0].clocks_in_khz / 1000.0) / 1000.0;
-		dc->dcn_soc->fabric_and_dram_bandwidth_vmid0p72 = dc->dcn_soc->number_of_channels *
-				(fclks.data[fclks.num_levels - (fclks.num_levels > 2 ? 3 : 2)].clocks_in_khz / 1000.0)
-				* ddr4_dram_factor_single_Channel / 1000.0;
-		dc->dcn_soc->fabric_and_dram_bandwidth_vnom0p8 = dc->dcn_soc->number_of_channels *
-				(fclks.data[fclks.num_levels - 2].clocks_in_khz / 1000.0)
-				* ddr4_dram_factor_single_Channel / 1000.0;
-		dc->dcn_soc->fabric_and_dram_bandwidth_vmax0p9 = dc->dcn_soc->number_of_channels *
-				(fclks.data[fclks.num_levels - 1].clocks_in_khz / 1000.0)
-				* ddr4_dram_factor_single_Channel / 1000.0;
+		ASSERT(fclks.num_levels);
+
+		vmin0p65_idx = 0;
+		vmid0p72_idx = fclks.num_levels -
+			(fclks.num_levels > 2 ? 3 : (fclks.num_levels > 1 ? 2 : 1));
+		vnom0p8_idx = fclks.num_levels - (fclks.num_levels > 1 ? 2 : 1);
+		vmax0p9_idx = fclks.num_levels - 1;
+
+		dc->dcn_soc->fabric_and_dram_bandwidth_vmin0p65 =
+			32 * (fclks.data[vmin0p65_idx].clocks_in_khz / 1000.0) / 1000.0;
+		dc->dcn_soc->fabric_and_dram_bandwidth_vmid0p72 =
+			dc->dcn_soc->number_of_channels *
+			(fclks.data[vmid0p72_idx].clocks_in_khz / 1000.0)
+			* ddr4_dram_factor_single_Channel / 1000.0;
+		dc->dcn_soc->fabric_and_dram_bandwidth_vnom0p8 =
+			dc->dcn_soc->number_of_channels *
+			(fclks.data[vnom0p8_idx].clocks_in_khz / 1000.0)
+			* ddr4_dram_factor_single_Channel / 1000.0;
+		dc->dcn_soc->fabric_and_dram_bandwidth_vmax0p9 =
+			dc->dcn_soc->number_of_channels *
+			(fclks.data[vmax0p9_idx].clocks_in_khz / 1000.0)
+			* ddr4_dram_factor_single_Channel / 1000.0;
 	} else
 		BREAK_TO_DEBUGGER();
 
-	kernel_fpu_end();
+	DC_FP_END();
 
 	res = dm_pp_get_clock_levels_by_type_with_voltage(
 			ctx, DM_PP_CLOCK_TYPE_DCFCLK, &dcfclks);
 
-	kernel_fpu_begin();
+	DC_FP_START();
 
 	if (res)
 		res = verify_clock_values(&dcfclks);
@@ -1469,7 +1544,7 @@ void dcn_bw_update_from_pplib(struct dc *dc)
 	} else
 		BREAK_TO_DEBUGGER();
 
-	kernel_fpu_end();
+	DC_FP_END();
 }
 
 void dcn_bw_notify_pplib_of_wm_ranges(struct dc *dc)
@@ -1484,11 +1559,11 @@ void dcn_bw_notify_pplib_of_wm_ranges(struct dc *dc)
 	if (!pp || !pp->set_wm_ranges)
 		return;
 
-	kernel_fpu_begin();
+	DC_FP_START();
 	min_fclk_khz = dc->dcn_soc->fabric_and_dram_bandwidth_vmin0p65 * 1000000 / 32;
 	min_dcfclk_khz = dc->dcn_soc->dcfclkv_min0p65 * 1000;
 	socclk_khz = dc->dcn_soc->socclk * 1000;
-	kernel_fpu_end();
+	DC_FP_END();
 
 	/* Now notify PPLib/SMU about which Watermarks sets they should select
 	 * depending on DPM state they are in. And update BW MGR GFX Engine and
@@ -1539,7 +1614,7 @@ void dcn_bw_notify_pplib_of_wm_ranges(struct dc *dc)
 
 void dcn_bw_sync_calcs_and_dml(struct dc *dc)
 {
-	kernel_fpu_begin();
+	DC_FP_START();
 	DC_LOG_BANDWIDTH_CALCS("sr_exit_time: %f ns\n"
 			"sr_enter_plus_exit_time: %f ns\n"
 			"urgent_latency: %f ns\n"
@@ -1728,5 +1803,5 @@ void dcn_bw_sync_calcs_and_dml(struct dc *dc)
 	dc->dml.ip.bug_forcing_LC_req_same_size_fixed =
 		dc->dcn_ip->bug_forcing_luma_and_chroma_request_to_same_size_fixed == dcn_bw_yes;
 	dc->dml.ip.dcfclk_cstate_latency = dc->dcn_ip->dcfclk_cstate_latency;
-	kernel_fpu_end();
+	DC_FP_END();
 }

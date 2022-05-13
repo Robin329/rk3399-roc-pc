@@ -71,7 +71,6 @@ static const struct v4l2_frequency_band bands_rf[] = {
 
 /* stream formats */
 struct airspy_format {
-	char	*name;
 	u32	pixelformat;
 	u32	buffersize;
 };
@@ -79,7 +78,6 @@ struct airspy_format {
 /* format descriptions for capture and preview */
 static struct airspy_format formats[] = {
 	{
-		.name		= "Real U12LE",
 		.pixelformat	= V4L2_SDR_FMT_RU12LE,
 		.buffersize	= BULK_BUFFER_SIZE,
 	},
@@ -417,8 +415,11 @@ static int airspy_alloc_urbs(struct airspy *s)
 		dev_dbg(s->dev, "alloc urb=%d\n", i);
 		s->urb_list[i] = usb_alloc_urb(0, GFP_ATOMIC);
 		if (!s->urb_list[i]) {
-			for (j = 0; j < i; j++)
+			for (j = 0; j < i; j++) {
 				usb_free_urb(s->urb_list[j]);
+				s->urb_list[j] = NULL;
+			}
+			s->urbs_initialized = 0;
 			return -ENOMEM;
 		}
 		usb_fill_bulk_urb(s->urb_list[i],
@@ -622,7 +623,6 @@ static int airspy_enum_fmt_sdr_cap(struct file *file, void *priv,
 	if (f->index >= NUM_FORMATS)
 		return -EINVAL;
 
-	strscpy(f->description, formats[f->index].name, sizeof(f->description));
 	f->pixelformat = formats[f->index].pixelformat;
 
 	return 0;
@@ -635,7 +635,6 @@ static int airspy_g_fmt_sdr_cap(struct file *file, void *priv,
 
 	f->fmt.sdr.pixelformat = s->pixelformat;
 	f->fmt.sdr.buffersize = s->buffersize;
-	memset(f->fmt.sdr.reserved, 0, sizeof(f->fmt.sdr.reserved));
 
 	return 0;
 }
@@ -650,7 +649,6 @@ static int airspy_s_fmt_sdr_cap(struct file *file, void *priv,
 	if (vb2_is_busy(q))
 		return -EBUSY;
 
-	memset(f->fmt.sdr.reserved, 0, sizeof(f->fmt.sdr.reserved));
 	for (i = 0; i < NUM_FORMATS; i++) {
 		if (formats[i].pixelformat == f->fmt.sdr.pixelformat) {
 			s->pixelformat = formats[i].pixelformat;
@@ -673,7 +671,6 @@ static int airspy_try_fmt_sdr_cap(struct file *file, void *priv,
 {
 	int i;
 
-	memset(f->fmt.sdr.reserved, 0, sizeof(f->fmt.sdr.reserved));
 	for (i = 0; i < NUM_FORMATS; i++) {
 		if (formats[i].pixelformat == f->fmt.sdr.pixelformat) {
 			f->fmt.sdr.buffersize = formats[i].buffersize;

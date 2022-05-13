@@ -82,7 +82,7 @@ static struct m68k_mem_info m68k_ramdisk __initdata;
 
 static char m68k_command_line[CL_SIZE] __initdata;
 
-void (*mach_sched_init) (irq_handler_t handler) __initdata = NULL;
+void (*mach_sched_init) (void) __initdata = NULL;
 /* machine dependent irq functions */
 void (*mach_init_IRQ) (void) __initdata = NULL;
 void (*mach_get_model) (char *model);
@@ -99,7 +99,6 @@ EXPORT_SYMBOL(mach_set_rtc_pll);
 void (*mach_reset)( void );
 void (*mach_halt)( void );
 void (*mach_power_off)( void );
-long mach_max_dma_address = 0x00ffffff; /* default set to the lower 16MB */
 #ifdef CONFIG_HEARTBEAT
 void (*mach_heartbeat) (int);
 EXPORT_SYMBOL(mach_heartbeat);
@@ -259,10 +258,7 @@ void __init setup_arch(char **cmdline_p)
 		}
 	}
 
-	init_mm.start_code = PAGE_OFFSET;
-	init_mm.end_code = (unsigned long)_etext;
-	init_mm.end_data = (unsigned long)_edata;
-	init_mm.brk = (unsigned long)_end;
+	setup_initial_init_mm((void *)PAGE_OFFSET, _etext, _edata, _end);
 
 #if defined(CONFIG_BOOTPARAM)
 	strncpy(m68k_command_line, CONFIG_BOOTPARAM_STRING, CL_SIZE);
@@ -273,10 +269,6 @@ void __init setup_arch(char **cmdline_p)
 	memcpy(boot_command_line, *cmdline_p, CL_SIZE);
 
 	parse_early_param();
-
-#ifdef CONFIG_DUMMY_CONSOLE
-	conswitchp = &dummy_con;
-#endif
 
 	switch (m68k_machtype) {
 #ifdef CONFIG_AMIGA
@@ -346,13 +338,6 @@ void __init setup_arch(char **cmdline_p)
 		panic("No configuration setup");
 	}
 
-	paging_init();
-
-#ifdef CONFIG_NATFEAT
-	nf_init();
-#endif
-
-#ifndef CONFIG_SUN3
 #ifdef CONFIG_BLK_DEV_INITRD
 	if (m68k_ramdisk.size) {
 		memblock_reserve(m68k_ramdisk.addr, m68k_ramdisk.size);
@@ -360,6 +345,12 @@ void __init setup_arch(char **cmdline_p)
 		initrd_end = initrd_start + m68k_ramdisk.size;
 		pr_info("initrd: %08lx - %08lx\n", initrd_start, initrd_end);
 	}
+#endif
+
+	paging_init();
+
+#ifdef CONFIG_NATFEAT
+	nf_init();
 #endif
 
 #ifdef CONFIG_ATARI
@@ -371,8 +362,6 @@ void __init setup_arch(char **cmdline_p)
 		dvma_init();
 	}
 #endif
-
-#endif /* !CONFIG_SUN3 */
 
 /* set ISA defs early as possible */
 #if defined(CONFIG_ISA) && defined(MULTI_ISA)

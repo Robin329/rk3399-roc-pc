@@ -524,7 +524,7 @@ static void b53_srab_prepare_irq(struct platform_device *pdev)
 
 		port->num = i;
 		port->dev = dev;
-		port->irq = platform_get_irq_byname(pdev, name);
+		port->irq = platform_get_irq_byname_optional(pdev, name);
 		kfree(name);
 	}
 
@@ -536,7 +536,6 @@ static void b53_srab_mux_init(struct platform_device *pdev)
 	struct b53_device *dev = platform_get_drvdata(pdev);
 	struct b53_srab_priv *priv = dev->priv;
 	struct b53_srab_port_priv *p;
-	struct resource *r;
 	unsigned int port;
 	u32 reg, off = 0;
 	int ret;
@@ -544,8 +543,7 @@ static void b53_srab_mux_init(struct platform_device *pdev)
 	if (dev->pdata && dev->pdata->chip_id != BCM58XX_DEVICE_ID)
 		return;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	priv->mux_config = devm_ioremap_resource(&pdev->dev, r);
+	priv->mux_config = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(priv->mux_config))
 		return;
 
@@ -593,7 +591,6 @@ static int b53_srab_probe(struct platform_device *pdev)
 	const struct of_device_id *of_id = NULL;
 	struct b53_srab_priv *priv;
 	struct b53_device *dev;
-	struct resource *r;
 
 	if (dn)
 		of_id = of_match_node(b53_srab_of_match, dn);
@@ -610,10 +607,9 @@ static int b53_srab_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	priv->regs = devm_ioremap_resource(&pdev->dev, r);
+	priv->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->regs))
-		return -ENOMEM;
+		return PTR_ERR(priv->regs);
 
 	dev = b53_switch_alloc(&pdev->dev, &b53_srab_ops, priv);
 	if (!dev)
@@ -633,18 +629,34 @@ static int b53_srab_probe(struct platform_device *pdev)
 static int b53_srab_remove(struct platform_device *pdev)
 {
 	struct b53_device *dev = platform_get_drvdata(pdev);
-	struct b53_srab_priv *priv = dev->priv;
 
-	b53_srab_intr_set(priv, false);
-	if (dev)
-		b53_switch_remove(dev);
+	if (!dev)
+		return 0;
+
+	b53_srab_intr_set(dev->priv, false);
+	b53_switch_remove(dev);
+
+	platform_set_drvdata(pdev, NULL);
 
 	return 0;
+}
+
+static void b53_srab_shutdown(struct platform_device *pdev)
+{
+	struct b53_device *dev = platform_get_drvdata(pdev);
+
+	if (!dev)
+		return;
+
+	b53_switch_shutdown(dev);
+
+	platform_set_drvdata(pdev, NULL);
 }
 
 static struct platform_driver b53_srab_driver = {
 	.probe = b53_srab_probe,
 	.remove = b53_srab_remove,
+	.shutdown = b53_srab_shutdown,
 	.driver = {
 		.name = "b53-srab-switch",
 		.of_match_table = b53_srab_of_match,

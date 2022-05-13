@@ -13,13 +13,23 @@
 
 #ifdef __ASSEMBLY__
 
-#define GLOBAL(name)	\
-	.globl name;	\
-	name:
-
 #if defined(CONFIG_X86_64) || defined(CONFIG_X86_ALIGNMENT_16)
 #define __ALIGN		.p2align 4, 0x90
 #define __ALIGN_STR	__stringify(__ALIGN)
+#endif
+
+#ifdef CONFIG_SLS
+#define RET	ret; int3
+#else
+#define RET	ret
+#endif
+
+#else /* __ASSEMBLY__ */
+
+#ifdef CONFIG_SLS
+#define ASM_RET	"ret; int3\n\t"
+#else
+#define ASM_RET	"ret\n\t"
 #endif
 
 #endif /* __ASSEMBLY__ */

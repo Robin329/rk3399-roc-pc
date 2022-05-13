@@ -327,7 +327,6 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 	struct spi_controller *master;
 	struct mt7621_spi *rs;
 	void __iomem *base;
-	struct resource *r;
 	int status = 0;
 	struct clk *clk;
 	int ret;
@@ -336,8 +335,7 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 	if (!match)
 		return -EINVAL;
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	base = devm_ioremap_resource(&pdev->dev, r);
+	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
@@ -352,9 +350,10 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 	if (status)
 		return status;
 
-	master = spi_alloc_master(&pdev->dev, sizeof(*rs));
+	master = devm_spi_alloc_master(&pdev->dev, sizeof(*rs));
 	if (!master) {
 		dev_info(&pdev->dev, "master allocation failed\n");
+		clk_disable_unprepare(clk);
 		return -ENOMEM;
 	}
 
@@ -379,10 +378,15 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 	ret = device_reset(&pdev->dev);
 	if (ret) {
 		dev_err(&pdev->dev, "SPI reset failed!\n");
+		clk_disable_unprepare(clk);
 		return ret;
 	}
 
-	return devm_spi_register_controller(&pdev->dev, master);
+	ret = spi_register_controller(master);
+	if (ret)
+		clk_disable_unprepare(clk);
+
+	return ret;
 }
 
 static int mt7621_spi_remove(struct platform_device *pdev)
@@ -393,6 +397,7 @@ static int mt7621_spi_remove(struct platform_device *pdev)
 	master = dev_get_drvdata(&pdev->dev);
 	rs = spi_controller_get_devdata(master);
 
+	spi_unregister_controller(master);
 	clk_disable_unprepare(rs->clk);
 
 	return 0;

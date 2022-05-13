@@ -18,6 +18,7 @@
 #include <linux/extable.h>
 #include <linux/uaccess.h>
 #include <linux/hugetlb.h>
+#include <linux/perf_event.h>
 
 #include <asm/traps.h>
 
@@ -47,7 +48,7 @@ int show_unhandled_signals = 1;
  *   VM_WRITE if write operation
  *   VM_EXEC  if execute operation
  */
-static unsigned long
+unsigned long
 parisc_acctyp(unsigned long code, unsigned int inst)
 {
 	if (code == 6 || code == 16)
@@ -66,7 +67,7 @@ parisc_acctyp(unsigned long code, unsigned int inst)
 	case 0x30000000: /* coproc2 */
 		if (bit22set(inst))
 			return VM_WRITE;
-		/* fall through */
+		fallthrough;
 
 	case 0x0: /* indexed/memory management */
 		if (bit22set(inst)) {
@@ -147,11 +148,11 @@ int fixup_exception(struct pt_regs *regs)
 		 * Fix up get_user() and put_user().
 		 * ASM_EXCEPTIONTABLE_ENTRY_EFAULT() sets the least-significant
 		 * bit in the relative address of the fixup routine to indicate
-		 * that %r8 should be loaded with -EFAULT to report a userspace
-		 * access error.
+		 * that gr[ASM_EXCEPTIONTABLE_REG] should be loaded with
+		 * -EFAULT to report a userspace access error.
 		 */
 		if (fix->fixup & 1) {
-			regs->gr[8] = -EFAULT;
+			regs->gr[ASM_EXCEPTIONTABLE_REG] = -EFAULT;
 
 			/* zero target register for get_user() */
 			if (parisc_acctyp(0, regs->iir) == VM_READ) {
@@ -265,24 +266,25 @@ void do_page_fault(struct pt_regs *regs, unsigned long code,
 	unsigned long acc_type;
 	vm_fault_t fault = 0;
 	unsigned int flags;
-
-	if (faulthandler_disabled())
-		goto no_context;
+	char *msg;
 
 	tsk = current;
 	mm = tsk->mm;
-	if (!mm)
+	if (!mm) {
+		msg = "Page fault: no context";
 		goto no_context;
+	}
 
-	flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	flags = FAULT_FLAG_DEFAULT;
 	if (user_mode(regs))
 		flags |= FAULT_FLAG_USER;
 
 	acc_type = parisc_acctyp(code, regs->iir);
 	if (acc_type & VM_WRITE)
 		flags |= FAULT_FLAG_WRITE;
+	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
 retry:
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	vma = find_vma_prev(mm, address, &prev_vma);
 	if (!vma || address < vma->vm_start)
 		goto check_expansion;
@@ -302,9 +304,9 @@ good_area:
 	 * fault.
 	 */
 
-	fault = handle_mm_fault(vma, address, flags);
+	fault = handle_mm_fault(vma, address, flags, regs);
 
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if (fault_signal_pending(fault, regs))
 		return;
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
@@ -322,24 +324,16 @@ good_area:
 			goto bad_area;
 		BUG();
 	}
-	if (flags & FAULT_FLAG_ALLOW_RETRY) {
-		if (fault & VM_FAULT_MAJOR)
-			current->maj_flt++;
-		else
-			current->min_flt++;
-		if (fault & VM_FAULT_RETRY) {
-			flags &= ~FAULT_FLAG_ALLOW_RETRY;
-
-			/*
-			 * No need to up_read(&mm->mmap_sem) as we would
-			 * have already released it in __lock_page_or_retry
-			 * in mm/filemap.c.
-			 */
-
-			goto retry;
-		}
+	if (fault & VM_FAULT_RETRY) {
+		/*
+		 * No need to mmap_read_unlock(mm) as we would
+		 * have already released it in __lock_page_or_retry
+		 * in mm/filemap.c.
+		 */
+		flags |= FAULT_FLAG_TRIED;
+		goto retry;
 	}
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	return;
 
 check_expansion:
@@ -351,7 +345,7 @@ check_expansion:
  * Something tried to access memory that isn't in our memory map..
  */
 bad_area:
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 
 	if (user_mode(regs)) {
 		int signo, si_code;
@@ -374,7 +368,7 @@ bad_area:
 			}
 
 			/* probably address is outside of mapped file */
-			/* fall through */
+			fallthrough;
 		case 17:	/* NA data TLB miss / page fault */
 		case 18:	/* Unaligned access - PCXS only */
 			signo = SIGBUS;
@@ -413,6 +407,7 @@ bad_area:
 		force_sig_fault(signo, si_code, (void __user *) address);
 		return;
 	}
+	msg = "Page fault: bad address";
 
 no_context:
 
@@ -420,11 +415,13 @@ no_context:
 		return;
 	}
 
-	parisc_terminate("Bad Address (null pointer deref?)", regs, code, address);
+	parisc_terminate(msg, regs, code, address);
 
-  out_of_memory:
-	up_read(&mm->mmap_sem);
-	if (!user_mode(regs))
+out_of_memory:
+	mmap_read_unlock(mm);
+	if (!user_mode(regs)) {
+		msg = "Page fault: out of memory";
 		goto no_context;
+	}
 	pagefault_out_of_memory();
 }

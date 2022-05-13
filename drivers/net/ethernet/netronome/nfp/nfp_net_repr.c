@@ -103,6 +103,7 @@ nfp_repr_get_stats64(struct net_device *netdev, struct rtnl_link_stats64 *stats)
 	case NFP_PORT_PF_PORT:
 	case NFP_PORT_VF_PORT:
 		nfp_repr_vnic_get_stats64(repr->port, stats);
+		break;
 	default:
 		break;
 	}
@@ -285,8 +286,8 @@ nfp_repr_transfer_features(struct net_device *netdev, struct net_device *lower)
 	if (repr->dst->u.port_info.lower_dev != lower)
 		return;
 
-	netdev->gso_max_size = lower->gso_max_size;
-	netdev->gso_max_segs = lower->gso_max_segs;
+	netif_set_gso_max_size(netdev, lower->gso_max_size);
+	netif_set_gso_max_segs(netdev, lower->gso_max_segs);
 
 	netdev_update_features(netdev);
 }
@@ -300,7 +301,6 @@ static void nfp_repr_clean(struct nfp_repr *repr)
 }
 
 static struct lock_class_key nfp_repr_netdev_xmit_lock_key;
-static struct lock_class_key nfp_repr_netdev_addr_lock_key;
 
 static void nfp_repr_set_lockdep_class_one(struct net_device *dev,
 					   struct netdev_queue *txq,
@@ -311,7 +311,6 @@ static void nfp_repr_set_lockdep_class_one(struct net_device *dev,
 
 static void nfp_repr_set_lockdep_class(struct net_device *dev)
 {
-	lockdep_set_class(&dev->addr_list_lock, &nfp_repr_netdev_addr_lock_key);
 	netdev_for_each_tx_queue(dev, nfp_repr_set_lockdep_class_one, NULL);
 }
 
@@ -382,7 +381,7 @@ int nfp_repr_init(struct nfp_app *app, struct net_device *netdev,
 
 	/* Advertise but disable TSO by default. */
 	netdev->features &= ~(NETIF_F_TSO | NETIF_F_TSO6);
-	netdev->gso_max_segs = NFP_NET_LSO_MAX_SEGS;
+	netif_set_gso_max_segs(netdev, NFP_NET_LSO_MAX_SEGS);
 
 	netdev->priv_flags |= IFF_NO_QUEUE | IFF_DISABLE_NETPOLL;
 	netdev->features |= NETIF_F_LLTX;
@@ -500,8 +499,7 @@ struct nfp_reprs *nfp_reprs_alloc(unsigned int num_reprs)
 {
 	struct nfp_reprs *reprs;
 
-	reprs = kzalloc(sizeof(*reprs) +
-			num_reprs * sizeof(struct net_device *), GFP_KERNEL);
+	reprs = kzalloc(struct_size(reprs, reprs, num_reprs), GFP_KERNEL);
 	if (!reprs)
 		return NULL;
 	reprs->num_reprs = num_reprs;

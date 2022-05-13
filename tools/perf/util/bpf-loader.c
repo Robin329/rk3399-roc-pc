@@ -14,7 +14,7 @@
 #include <linux/string.h>
 #include <linux/zalloc.h>
 #include <errno.h>
-#include "perf.h"
+#include <stdlib.h>
 #include "debug.h"
 #include "evlist.h"
 #include "bpf-loader.h"
@@ -23,8 +23,14 @@
 #include "probe-finder.h" // for MAX_PROBES
 #include "parse-events.h"
 #include "strfilter.h"
+#include "util.h"
 #include "llvm-utils.h"
 #include "c++/clang-c.h"
+
+#include <internal/xyarray.h>
+
+/* temporarily disable libbpf deprecation warnings */
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 static int libbpf_perf_print(enum libbpf_print_level level __attribute__((unused)),
 			      const char *fmt, va_list args)
@@ -325,12 +331,6 @@ config_bpf_program(struct bpf_program *prog)
 	probe_conf.no_inlines = false;
 	probe_conf.force_add = false;
 
-	config_str = bpf_program__title(prog, false);
-	if (IS_ERR(config_str)) {
-		pr_debug("bpf: unable to get title for program\n");
-		return PTR_ERR(config_str);
-	}
-
 	priv = calloc(sizeof(*priv), 1);
 	if (!priv) {
 		pr_debug("bpf: failed to alloc priv\n");
@@ -338,6 +338,7 @@ config_bpf_program(struct bpf_program *prog)
 	}
 	pev = &priv->pev;
 
+	config_str = bpf_program__section_name(prog);
 	pr_debug("bpf: config program '%s'\n", config_str);
 	err = parse_prog_config(config_str, &main_str, &is_tp, pev);
 	if (err)
@@ -423,7 +424,7 @@ preproc_gen_prologue(struct bpf_program *prog, int n,
 	size_t prologue_cnt = 0;
 	int i, err;
 
-	if (IS_ERR(priv) || !priv || priv->is_tp)
+	if (IS_ERR_OR_NULL(priv) || priv->is_tp)
 		goto errout;
 
 	pev = &priv->pev;
@@ -451,10 +452,7 @@ preproc_gen_prologue(struct bpf_program *prog, int n,
 	if (err) {
 		const char *title;
 
-		title = bpf_program__title(prog, false);
-		if (!title)
-			title = "[unknown]";
-
+		title = bpf_program__section_name(prog);
 		pr_debug("Failed to generate prologue for program %s\n",
 			 title);
 		return err;
@@ -575,7 +573,7 @@ static int hook_load_preprocessor(struct bpf_program *prog)
 	bool need_prologue = false;
 	int err, i;
 
-	if (IS_ERR(priv) || !priv) {
+	if (IS_ERR_OR_NULL(priv)) {
 		pr_debug("Internal error when hook preprocessor\n");
 		return -BPF_LOADER_ERRNO__INTERNAL;
 	}
@@ -647,8 +645,11 @@ int bpf__probe(struct bpf_object *obj)
 			goto out;
 
 		priv = bpf_program__priv(prog);
-		if (IS_ERR(priv) || !priv) {
-			err = PTR_ERR(priv);
+		if (IS_ERR_OR_NULL(priv)) {
+			if (!priv)
+				err = -BPF_LOADER_ERRNO__INTERNAL;
+			else
+				err = PTR_ERR(priv);
 			goto out;
 		}
 
@@ -676,7 +677,7 @@ int bpf__probe(struct bpf_object *obj)
 		 * After probing, let's consider prologue, which
 		 * adds program fetcher to BPF programs.
 		 *
-		 * hook_load_preprocessorr() hooks pre-processor
+		 * hook_load_preprocessor() hooks pre-processor
 		 * to bpf_program, let it generate prologue
 		 * dynamically during loading.
 		 */
@@ -698,7 +699,7 @@ int bpf__unprobe(struct bpf_object *obj)
 		struct bpf_prog_priv *priv = bpf_program__priv(prog);
 		int i;
 
-		if (IS_ERR(priv) || !priv || priv->is_tp)
+		if (IS_ERR_OR_NULL(priv) || priv->is_tp)
 			continue;
 
 		for (i = 0; i < priv->pev.ntevs; i++) {
@@ -756,14 +757,14 @@ int bpf__foreach_event(struct bpf_object *obj,
 		struct perf_probe_event *pev;
 		int i, fd;
 
-		if (IS_ERR(priv) || !priv) {
+		if (IS_ERR_OR_NULL(priv)) {
 			pr_debug("bpf: failed to get private field\n");
 			return -BPF_LOADER_ERRNO__INTERNAL;
 		}
 
 		if (priv->is_tp) {
 			fd = bpf_program__fd(prog);
-			err = (*func)(priv->sys_name, priv->evt_name, fd, arg);
+			err = (*func)(priv->sys_name, priv->evt_name, fd, obj, arg);
 			if (err) {
 				pr_debug("bpf: tracepoint call back failed, stop iterate\n");
 				return err;
@@ -788,7 +789,7 @@ int bpf__foreach_event(struct bpf_object *obj,
 				return fd;
 			}
 
-			err = (*func)(tev->group, tev->event, fd, arg);
+			err = (*func)(tev->group, tev->event, fd, obj, arg);
 			if (err) {
 				pr_debug("bpf: call back failed, stop iterate\n");
 				return err;
@@ -817,7 +818,7 @@ struct bpf_map_op {
 	} k;
 	union {
 		u64 value;
-		struct perf_evsel *evsel;
+		struct evsel *evsel;
 	} v;
 };
 
@@ -1043,7 +1044,7 @@ __bpf_map__config_value(struct bpf_map *map,
 static int
 bpf_map__config_value(struct bpf_map *map,
 		      struct parse_events_term *term,
-		      struct perf_evlist *evlist __maybe_unused)
+		      struct evlist *evlist __maybe_unused)
 {
 	if (!term->err_val) {
 		pr_debug("Config value not set\n");
@@ -1061,14 +1062,13 @@ bpf_map__config_value(struct bpf_map *map,
 static int
 __bpf_map__config_event(struct bpf_map *map,
 			struct parse_events_term *term,
-			struct perf_evlist *evlist)
+			struct evlist *evlist)
 {
-	struct perf_evsel *evsel;
 	const struct bpf_map_def *def;
 	struct bpf_map_op *op;
 	const char *map_name = bpf_map__name(map);
+	struct evsel *evsel = evlist__find_evsel_by_str(evlist, term->val.str);
 
-	evsel = perf_evlist__find_evsel_by_str(evlist, term->val.str);
 	if (!evsel) {
 		pr_debug("Event (for '%s') '%s' doesn't exist\n",
 			 map_name, term->val.str);
@@ -1103,7 +1103,7 @@ __bpf_map__config_event(struct bpf_map *map,
 static int
 bpf_map__config_event(struct bpf_map *map,
 		      struct parse_events_term *term,
-		      struct perf_evlist *evlist)
+		      struct evlist *evlist)
 {
 	if (!term->err_val) {
 		pr_debug("Config value not set\n");
@@ -1121,7 +1121,7 @@ bpf_map__config_event(struct bpf_map *map,
 struct bpf_obj_config__map_func {
 	const char *config_opt;
 	int (*config_func)(struct bpf_map *, struct parse_events_term *,
-			   struct perf_evlist *);
+			   struct evlist *);
 };
 
 struct bpf_obj_config__map_func bpf_obj_config__map_funcs[] = {
@@ -1169,7 +1169,7 @@ config_map_indices_range_check(struct parse_events_term *term,
 static int
 bpf__obj_config_map(struct bpf_object *obj,
 		    struct parse_events_term *term,
-		    struct perf_evlist *evlist,
+		    struct evlist *evlist,
 		    int *key_scan_pos)
 {
 	/* key is "map:<mapname>.<config opt>" */
@@ -1220,15 +1220,16 @@ bpf__obj_config_map(struct bpf_object *obj,
 	pr_debug("ERROR: Invalid map config option '%s'\n", map_opt);
 	err = -BPF_LOADER_ERRNO__OBJCONF_MAP_OPT;
 out:
-	free(map_name);
 	if (!err)
-		key_scan_pos += strlen(map_opt);
+		*key_scan_pos += strlen(map_opt);
+
+	free(map_name);
 	return err;
 }
 
 int bpf__config_obj(struct bpf_object *obj,
 		    struct parse_events_term *term,
-		    struct perf_evlist *evlist,
+		    struct evlist *evlist,
 		    int *error_pos)
 {
 	int key_scan_pos = 0;
@@ -1401,9 +1402,9 @@ apply_config_value_for_key(int map_fd, void *pkey,
 
 static int
 apply_config_evsel_for_key(const char *name, int map_fd, void *pkey,
-			   struct perf_evsel *evsel)
+			   struct evsel *evsel)
 {
-	struct xyarray *xy = evsel->fd;
+	struct xyarray *xy = evsel->core.fd;
 	struct perf_event_attr *attr;
 	unsigned int key, events;
 	bool check_pass = false;
@@ -1421,13 +1422,13 @@ apply_config_evsel_for_key(const char *name, int map_fd, void *pkey,
 		return -BPF_LOADER_ERRNO__OBJCONF_MAP_EVTDIM;
 	}
 
-	attr = &evsel->attr;
+	attr = &evsel->core.attr;
 	if (attr->inherit) {
 		pr_debug("ERROR: Can't put inherit event into map %s\n", name);
 		return -BPF_LOADER_ERRNO__OBJCONF_MAP_EVTINH;
 	}
 
-	if (perf_evsel__is_bpf_output(evsel))
+	if (evsel__is_bpf_output(evsel))
 		check_pass = true;
 	if (attr->type == PERF_TYPE_RAW)
 		check_pass = true;
@@ -1523,11 +1524,11 @@ int bpf__apply_obj_config(void)
 			(strcmp(name, 			\
 				bpf_map__name(pos)) == 0))
 
-struct perf_evsel *bpf__setup_output_event(struct perf_evlist *evlist, const char *name)
+struct evsel *bpf__setup_output_event(struct evlist *evlist, const char *name)
 {
 	struct bpf_map_priv *tmpl_priv = NULL;
 	struct bpf_object *obj, *tmp;
-	struct perf_evsel *evsel = NULL;
+	struct evsel *evsel = NULL;
 	struct bpf_map *map;
 	int err;
 	bool need_init = false;
@@ -1565,7 +1566,7 @@ struct perf_evsel *bpf__setup_output_event(struct perf_evlist *evlist, const cha
 			return ERR_PTR(-err);
 		}
 
-		evsel = perf_evlist__last(evlist);
+		evsel = evlist__last(evlist);
 	}
 
 	bpf__for_each_map_named(map, obj, tmp, name) {
@@ -1600,9 +1601,9 @@ struct perf_evsel *bpf__setup_output_event(struct perf_evlist *evlist, const cha
 	return evsel;
 }
 
-int bpf__setup_stdout(struct perf_evlist *evlist)
+int bpf__setup_stdout(struct evlist *evlist)
 {
-	struct perf_evsel *evsel = bpf__setup_output_event(evlist, "__bpf_stdout__");
+	struct evsel *evsel = bpf__setup_output_event(evlist, "__bpf_stdout__");
 	return PTR_ERR_OR_ZERO(evsel);
 }
 
@@ -1756,7 +1757,7 @@ int bpf__strerror_load(struct bpf_object *obj,
 
 int bpf__strerror_config_obj(struct bpf_object *obj __maybe_unused,
 			     struct parse_events_term *term __maybe_unused,
-			     struct perf_evlist *evlist __maybe_unused,
+			     struct evlist *evlist __maybe_unused,
 			     int *error_pos __maybe_unused, int err,
 			     char *buf, size_t size)
 {
@@ -1780,7 +1781,7 @@ int bpf__strerror_apply_obj_config(int err, char *buf, size_t size)
 	return 0;
 }
 
-int bpf__strerror_setup_output_event(struct perf_evlist *evlist __maybe_unused,
+int bpf__strerror_setup_output_event(struct evlist *evlist __maybe_unused,
 				     int err, char *buf, size_t size)
 {
 	bpf__strerror_head(err, buf, size);

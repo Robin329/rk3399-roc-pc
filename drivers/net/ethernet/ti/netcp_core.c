@@ -1116,7 +1116,7 @@ netcp_tx_map_skb(struct sk_buff *skb, struct netcp_intf *netcp)
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
 		struct page *page = skb_frag_page(frag);
-		u32 page_offset = frag->page_offset;
+		u32 page_offset = skb_frag_off(frag);
 		u32 buf_len = skb_frag_size(frag);
 		dma_addr_t desc_dma;
 		u32 desc_dma_32;
@@ -1350,8 +1350,8 @@ int netcp_txpipe_open(struct netcp_tx_pipe *tx_pipe)
 	tx_pipe->dma_queue = knav_queue_open(name, tx_pipe->dma_queue_id,
 					     KNAV_QUEUE_SHARED);
 	if (IS_ERR(tx_pipe->dma_queue)) {
-		dev_err(dev, "Could not open DMA queue for channel \"%s\": %d\n",
-			name, ret);
+		dev_err(dev, "Could not open DMA queue for channel \"%s\": %pe\n",
+			name, tx_pipe->dma_queue);
 		ret = PTR_ERR(tx_pipe->dma_queue);
 		goto err;
 	}
@@ -1811,7 +1811,7 @@ out:
 	return (ret == 0) ? 0 : err;
 }
 
-static void netcp_ndo_tx_timeout(struct net_device *ndev)
+static void netcp_ndo_tx_timeout(struct net_device *ndev, unsigned int txqueue)
 {
 	struct netcp_intf *netcp = netdev_priv(ndev);
 	unsigned int descs = knav_pool_count(netcp->tx_pool);
@@ -1944,7 +1944,7 @@ static const struct net_device_ops netcp_netdev_ops = {
 	.ndo_stop		= netcp_ndo_stop,
 	.ndo_start_xmit		= netcp_ndo_start_xmit,
 	.ndo_set_rx_mode	= netcp_set_rx_mode,
-	.ndo_do_ioctl           = netcp_ndo_ioctl,
+	.ndo_eth_ioctl           = netcp_ndo_ioctl,
 	.ndo_get_stats64        = netcp_get_stats,
 	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
@@ -1966,7 +1966,6 @@ static int netcp_create_interface(struct netcp_device *netcp_device,
 	struct resource res;
 	void __iomem *efuse = NULL;
 	u32 efuse_mac = 0;
-	const void *mac_addr;
 	u8 efuse_mac_addr[6];
 	u32 temp[2];
 	int ret = 0;
@@ -2019,7 +2018,7 @@ static int netcp_create_interface(struct netcp_device *netcp_device,
 			goto quit;
 		}
 
-		efuse = devm_ioremap_nocache(dev, res.start, size);
+		efuse = devm_ioremap(dev, res.start, size);
 		if (!efuse) {
 			dev_err(dev, "could not map resource\n");
 			devm_release_mem_region(dev, res.start, size);
@@ -2029,18 +2028,16 @@ static int netcp_create_interface(struct netcp_device *netcp_device,
 
 		emac_arch_get_mac_addr(efuse_mac_addr, efuse, efuse_mac);
 		if (is_valid_ether_addr(efuse_mac_addr))
-			ether_addr_copy(ndev->dev_addr, efuse_mac_addr);
+			eth_hw_addr_set(ndev, efuse_mac_addr);
 		else
-			eth_random_addr(ndev->dev_addr);
+			eth_hw_addr_random(ndev);
 
 		devm_iounmap(dev, efuse);
 		devm_release_mem_region(dev, res.start, size);
 	} else {
-		mac_addr = of_get_mac_address(node_interface);
-		if (!IS_ERR(mac_addr))
-			ether_addr_copy(ndev->dev_addr, mac_addr);
-		else
-			eth_random_addr(ndev->dev_addr);
+		ret = of_get_ethdev_address(node_interface, ndev);
+		if (ret)
+			eth_hw_addr_random(ndev);
 	}
 
 	ret = of_property_read_string(node_interface, "rx-channel",

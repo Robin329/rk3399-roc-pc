@@ -20,7 +20,8 @@ static int __remove_xattr(struct ceph_inode_info *ci,
 
 static bool ceph_is_valid_xattr(const char *name)
 {
-	return !strncmp(name, XATTR_CEPH_PREFIX, XATTR_CEPH_PREFIX_LEN) ||
+	return !strncmp(name, XATTR_SECURITY_PREFIX, XATTR_SECURITY_PREFIX_LEN) ||
+	       !strncmp(name, XATTR_CEPH_PREFIX, XATTR_CEPH_PREFIX_LEN) ||
 	       !strncmp(name, XATTR_TRUSTED_PREFIX, XATTR_TRUSTED_PREFIX_LEN) ||
 	       !strncmp(name, XATTR_USER_PREFIX, XATTR_USER_PREFIX_LEN);
 }
@@ -41,6 +42,7 @@ struct ceph_vxattr {
 #define VXATTR_FLAG_READONLY		(1<<0)
 #define VXATTR_FLAG_HIDDEN		(1<<1)
 #define VXATTR_FLAG_RSTAT		(1<<2)
+#define VXATTR_FLAG_DIRSTAT		(1<<3)
 
 /* layouts */
 
@@ -115,7 +117,8 @@ static ssize_t ceph_vxattrcb_layout(struct ceph_inode_info *ci, char *val,
  * NULL terminates however, so call it on a temporary buffer and then memcpy
  * the result into place.
  */
-static int ceph_fmt_xattr(char *val, size_t size, const char *fmt, ...)
+static __printf(3, 4)
+int ceph_fmt_xattr(char *val, size_t size, const char *fmt, ...)
 {
 	int ret;
 	va_list args;
@@ -230,6 +233,12 @@ static ssize_t ceph_vxattrcb_dir_rsubdirs(struct ceph_inode_info *ci, char *val,
 	return ceph_fmt_xattr(val, size, "%lld", ci->i_rsubdirs);
 }
 
+static ssize_t ceph_vxattrcb_dir_rsnaps(struct ceph_inode_info *ci, char *val,
+					  size_t size)
+{
+	return ceph_fmt_xattr(val, size, "%lld", ci->i_rsnaps);
+}
+
 static ssize_t ceph_vxattrcb_dir_rbytes(struct ceph_inode_info *ci, char *val,
 					size_t size)
 {
@@ -301,6 +310,48 @@ static ssize_t ceph_vxattrcb_snap_btime(struct ceph_inode_info *ci, char *val,
 				ci->i_snap_btime.tv_nsec);
 }
 
+static ssize_t ceph_vxattrcb_cluster_fsid(struct ceph_inode_info *ci,
+					  char *val, size_t size)
+{
+	struct ceph_fs_client *fsc = ceph_sb_to_client(ci->vfs_inode.i_sb);
+
+	return ceph_fmt_xattr(val, size, "%pU", &fsc->client->fsid);
+}
+
+static ssize_t ceph_vxattrcb_client_id(struct ceph_inode_info *ci,
+				       char *val, size_t size)
+{
+	struct ceph_fs_client *fsc = ceph_sb_to_client(ci->vfs_inode.i_sb);
+
+	return ceph_fmt_xattr(val, size, "client%lld",
+			      ceph_client_gid(fsc->client));
+}
+
+static ssize_t ceph_vxattrcb_caps(struct ceph_inode_info *ci, char *val,
+					size_t size)
+{
+	int issued;
+
+	spin_lock(&ci->i_ceph_lock);
+	issued = __ceph_caps_issued(ci, NULL);
+	spin_unlock(&ci->i_ceph_lock);
+
+	return ceph_fmt_xattr(val, size, "%s/0x%x",
+			      ceph_cap_string(issued), issued);
+}
+
+static ssize_t ceph_vxattrcb_auth_mds(struct ceph_inode_info *ci,
+				       char *val, size_t size)
+{
+	int ret;
+
+	spin_lock(&ci->i_ceph_lock);
+	ret = ceph_fmt_xattr(val, size, "%d",
+			     ci->i_auth_cap ? ci->i_auth_cap->session->s_mds : -1);
+	spin_unlock(&ci->i_ceph_lock);
+	return ret;
+}
+
 #define CEPH_XATTR_NAME(_type, _name)	XATTR_CEPH_PREFIX #_type "." #_name
 #define CEPH_XATTR_NAME2(_type, _name, _name2)	\
 	XATTR_CEPH_PREFIX #_type "." #_name "." #_name2
@@ -345,12 +396,13 @@ static struct ceph_vxattr ceph_dir_vxattrs[] = {
 	XATTR_LAYOUT_FIELD(dir, layout, object_size),
 	XATTR_LAYOUT_FIELD(dir, layout, pool),
 	XATTR_LAYOUT_FIELD(dir, layout, pool_namespace),
-	XATTR_NAME_CEPH(dir, entries, 0),
-	XATTR_NAME_CEPH(dir, files, 0),
-	XATTR_NAME_CEPH(dir, subdirs, 0),
+	XATTR_NAME_CEPH(dir, entries, VXATTR_FLAG_DIRSTAT),
+	XATTR_NAME_CEPH(dir, files, VXATTR_FLAG_DIRSTAT),
+	XATTR_NAME_CEPH(dir, subdirs, VXATTR_FLAG_DIRSTAT),
 	XATTR_RSTAT_FIELD(dir, rentries),
 	XATTR_RSTAT_FIELD(dir, rfiles),
 	XATTR_RSTAT_FIELD(dir, rsubdirs),
+	XATTR_RSTAT_FIELD(dir, rsnaps),
 	XATTR_RSTAT_FIELD(dir, rbytes),
 	XATTR_RSTAT_FIELD(dir, rctime),
 	{
@@ -375,6 +427,13 @@ static struct ceph_vxattr ceph_dir_vxattrs[] = {
 		.getxattr_cb = ceph_vxattrcb_snap_btime,
 		.exists_cb = ceph_vxattrcb_snap_btime_exists,
 		.flags = VXATTR_FLAG_READONLY,
+	},
+	{
+		.name = "ceph.caps",
+		.name_size = sizeof("ceph.caps"),
+		.getxattr_cb = ceph_vxattrcb_caps,
+		.exists_cb = NULL,
+		.flags = VXATTR_FLAG_HIDDEN,
 	},
 	{ .name = NULL, 0 }	/* Required table terminator */
 };
@@ -401,6 +460,38 @@ static struct ceph_vxattr ceph_file_vxattrs[] = {
 		.exists_cb = ceph_vxattrcb_snap_btime_exists,
 		.flags = VXATTR_FLAG_READONLY,
 	},
+	{
+		.name = "ceph.caps",
+		.name_size = sizeof("ceph.caps"),
+		.getxattr_cb = ceph_vxattrcb_caps,
+		.exists_cb = NULL,
+		.flags = VXATTR_FLAG_HIDDEN,
+	},
+	{ .name = NULL, 0 }	/* Required table terminator */
+};
+
+static struct ceph_vxattr ceph_common_vxattrs[] = {
+	{
+		.name = "ceph.cluster_fsid",
+		.name_size = sizeof("ceph.cluster_fsid"),
+		.getxattr_cb = ceph_vxattrcb_cluster_fsid,
+		.exists_cb = NULL,
+		.flags = VXATTR_FLAG_READONLY,
+	},
+	{
+		.name = "ceph.client_id",
+		.name_size = sizeof("ceph.client_id"),
+		.getxattr_cb = ceph_vxattrcb_client_id,
+		.exists_cb = NULL,
+		.flags = VXATTR_FLAG_READONLY,
+	},
+	{
+		.name = "ceph.auth_mds",
+		.name_size = sizeof("ceph.auth_mds"),
+		.getxattr_cb = ceph_vxattrcb_auth_mds,
+		.exists_cb = NULL,
+		.flags = VXATTR_FLAG_READONLY,
+	},
 	{ .name = NULL, 0 }	/* Required table terminator */
 };
 
@@ -424,6 +515,13 @@ static struct ceph_vxattr *ceph_match_vxattr(struct inode *inode,
 				return vxattr;
 			vxattr++;
 		}
+	}
+
+	vxattr = ceph_common_vxattrs;
+	while (vxattr->name) {
+		if (!strcmp(vxattr->name, name))
+			return vxattr;
+		vxattr++;
 	}
 
 	return NULL;
@@ -496,10 +594,10 @@ static int __set_xattr(struct ceph_inode_info *ci,
 		kfree(*newxattr);
 		*newxattr = NULL;
 		if (xattr->should_free_val)
-			kfree((void *)xattr->val);
+			kfree(xattr->val);
 
 		if (update_xattr) {
-			kfree((void *)name);
+			kfree(name);
 			name = xattr->name;
 		}
 		ci->i_xattrs.names_size -= xattr->name_len;
@@ -565,9 +663,9 @@ static void __free_xattr(struct ceph_inode_xattr *xattr)
 	BUG_ON(!xattr);
 
 	if (xattr->should_free_name)
-		kfree((void *)xattr->name);
+		kfree(xattr->name);
 	if (xattr->should_free_val)
-		kfree((void *)xattr->val);
+		kfree(xattr->val);
 
 	kfree(xattr);
 }
@@ -581,9 +679,9 @@ static int __remove_xattr(struct ceph_inode_info *ci,
 	rb_erase(&xattr->node, &ci->i_xattrs.index);
 
 	if (xattr->should_free_name)
-		kfree((void *)xattr->name);
+		kfree(xattr->name);
 	if (xattr->should_free_val)
-		kfree((void *)xattr->val);
+		kfree(xattr->val);
 
 	ci->i_xattrs.names_size -= xattr->name_len;
 	ci->i_xattrs.vals_size -= xattr->val_len;
@@ -654,7 +752,7 @@ static int __build_xattrs(struct inode *inode)
 	u32 len;
 	const char *name, *val;
 	struct ceph_inode_info *ci = ceph_inode(inode);
-	int xattr_version;
+	u64 xattr_version;
 	struct ceph_inode_xattr **xattrs = NULL;
 	int err = 0;
 	int i;
@@ -835,6 +933,8 @@ ssize_t __ceph_getxattr(struct inode *inode, const char *name, void *value,
 		int mask = 0;
 		if (vxattr->flags & VXATTR_FLAG_RSTAT)
 			mask |= CEPH_STAT_RSTAT;
+		if (vxattr->flags & VXATTR_FLAG_DIRSTAT)
+			mask |= CEPH_CAP_FILE_SHARED;
 		err = ceph_do_getattr(inode, mask, true);
 		if (err)
 			return err;
@@ -850,12 +950,12 @@ ssize_t __ceph_getxattr(struct inode *inode, const char *name, void *value,
 	req_mask = __get_request_mask(inode);
 
 	spin_lock(&ci->i_ceph_lock);
-	dout("getxattr %p ver=%lld index_ver=%lld\n", inode,
+	dout("getxattr %p name '%s' ver=%lld index_ver=%lld\n", inode, name,
 	     ci->i_xattrs.version, ci->i_xattrs.index_version);
 
 	if (ci->i_xattrs.version == 0 ||
 	    !((req_mask & CEPH_CAP_XATTR_SHARED) ||
-	      __ceph_caps_issued_mask(ci, CEPH_CAP_XATTR_SHARED, 1))) {
+	      __ceph_caps_issued_mask_metric(ci, CEPH_CAP_XATTR_SHARED, 1))) {
 		spin_unlock(&ci->i_ceph_lock);
 
 		/* security module gets xattr while filling trace */
@@ -892,7 +992,8 @@ ssize_t __ceph_getxattr(struct inode *inode, const char *name, void *value,
 	memcpy(value, xattr->val, xattr->val_len);
 
 	if (current->journal_info &&
-	    !strncmp(name, XATTR_SECURITY_PREFIX, XATTR_SECURITY_PREFIX_LEN))
+	    !strncmp(name, XATTR_SECURITY_PREFIX, XATTR_SECURITY_PREFIX_LEN) &&
+	    security_ismaclabel(name + XATTR_SECURITY_PREFIX_LEN))
 		ci->i_ceph_flags |= CEPH_I_SEC_INITED;
 out:
 	spin_unlock(&ci->i_ceph_lock);
@@ -903,18 +1004,16 @@ ssize_t ceph_listxattr(struct dentry *dentry, char *names, size_t size)
 {
 	struct inode *inode = d_inode(dentry);
 	struct ceph_inode_info *ci = ceph_inode(inode);
-	struct ceph_vxattr *vxattrs = ceph_inode_vxattrs(inode);
 	bool len_only = (size == 0);
 	u32 namelen;
 	int err;
-	int i;
 
 	spin_lock(&ci->i_ceph_lock);
 	dout("listxattr %p ver=%lld index_ver=%lld\n", inode,
 	     ci->i_xattrs.version, ci->i_xattrs.index_version);
 
 	if (ci->i_xattrs.version == 0 ||
-	    !__ceph_caps_issued_mask(ci, CEPH_CAP_XATTR_SHARED, 1)) {
+	    !__ceph_caps_issued_mask_metric(ci, CEPH_CAP_XATTR_SHARED, 1)) {
 		spin_unlock(&ci->i_ceph_lock);
 		err = ceph_do_getattr(inode, CEPH_STAT_CAP_XATTR, true);
 		if (err)
@@ -936,33 +1035,6 @@ ssize_t ceph_listxattr(struct dentry *dentry, char *names, size_t size)
 		names = __copy_xattr_names(ci, names);
 		size -= namelen;
 	}
-
-
-	/* virtual xattr names, too */
-	if (vxattrs) {
-		for (i = 0; vxattrs[i].name; i++) {
-			size_t this_len;
-
-			if (vxattrs[i].flags & VXATTR_FLAG_HIDDEN)
-				continue;
-			if (vxattrs[i].exists_cb && !vxattrs[i].exists_cb(ci))
-				continue;
-
-			this_len = strlen(vxattrs[i].name) + 1;
-			namelen += this_len;
-			if (len_only)
-				continue;
-
-			if (this_len > size) {
-				err = -ERANGE;
-				goto out;
-			}
-
-			memcpy(names, vxattrs[i].name, this_len);
-			names += this_len;
-			size -= this_len;
-		}
-	}
 	err = namelen;
 out:
 	spin_unlock(&ci->i_ceph_lock);
@@ -976,6 +1048,7 @@ static int ceph_sync_setxattr(struct inode *inode, const char *name,
 	struct ceph_inode_info *ci = ceph_inode(inode);
 	struct ceph_mds_request *req;
 	struct ceph_mds_client *mdsc = fsc->mdsc;
+	struct ceph_osd_client *osdc = &fsc->client->osdc;
 	struct ceph_pagelist *pagelist = NULL;
 	int op = CEPH_MDS_OP_SETXATTR;
 	int err;
@@ -1014,6 +1087,8 @@ static int ceph_sync_setxattr(struct inode *inode, const char *name,
 
 	if (op == CEPH_MDS_OP_SETXATTR) {
 		req->r_args.setxattr.flags = cpu_to_le32(flags);
+		req->r_args.setxattr.osdmap_epoch =
+			cpu_to_le32(osdc->osdmap->epoch);
 		req->r_pagelist = pagelist;
 		pagelist = NULL;
 	}
@@ -1105,7 +1180,8 @@ retry:
 		}
 	}
 
-	dout("setxattr %p issued %s\n", inode, ceph_cap_string(issued));
+	dout("setxattr %p name '%s' issued %s\n", inode, name,
+	     ceph_cap_string(issued));
 	__build_xattrs(inode);
 
 	required_blob_size = __get_required_blob_size(ci, name_len, val_len);
@@ -1188,6 +1264,7 @@ static int ceph_get_xattr_handler(const struct xattr_handler *handler,
 }
 
 static int ceph_set_xattr_handler(const struct xattr_handler *handler,
+				  struct user_namespace *mnt_userns,
 				  struct dentry *unused, struct inode *inode,
 				  const char *name, const void *value,
 				  size_t size, int flags)
@@ -1234,7 +1311,7 @@ int ceph_security_init_secctx(struct dentry *dentry, umode_t mode,
 	int err;
 
 	err = security_dentry_init_security(dentry, mode, &dentry->d_name,
-					    &as_ctx->sec_ctx,
+					    &name, &as_ctx->sec_ctx,
 					    &as_ctx->sec_ctxlen);
 	if (err < 0) {
 		WARN_ON_ONCE(err != -EOPNOTSUPP);
@@ -1258,7 +1335,6 @@ int ceph_security_init_secctx(struct dentry *dentry, umode_t mode,
 	 * It only supports single security module and only selinux has
 	 * dentry_init_security hook.
 	 */
-	name = XATTR_NAME_SELINUX;
 	name_len = strlen(name);
 	err = ceph_pagelist_reserve(pagelist,
 				    4 * 2 + name_len + as_ctx->sec_ctxlen);
@@ -1293,42 +1369,8 @@ out:
 		ceph_pagelist_release(pagelist);
 	return err;
 }
-
-void ceph_security_invalidate_secctx(struct inode *inode)
-{
-	security_inode_invalidate_secctx(inode);
-}
-
-static int ceph_xattr_set_security_label(const struct xattr_handler *handler,
-				    struct dentry *unused, struct inode *inode,
-				    const char *key, const void *buf,
-				    size_t buflen, int flags)
-{
-	if (security_ismaclabel(key)) {
-		const char *name = xattr_full_name(handler, key);
-		return __ceph_setxattr(inode, name, buf, buflen, flags);
-	}
-	return  -EOPNOTSUPP;
-}
-
-static int ceph_xattr_get_security_label(const struct xattr_handler *handler,
-				    struct dentry *unused, struct inode *inode,
-				    const char *key, void *buf, size_t buflen)
-{
-	if (security_ismaclabel(key)) {
-		const char *name = xattr_full_name(handler, key);
-		return __ceph_getxattr(inode, name, buf, buflen);
-	}
-	return  -EOPNOTSUPP;
-}
-
-static const struct xattr_handler ceph_security_label_handler = {
-	.prefix = XATTR_SECURITY_PREFIX,
-	.get    = ceph_xattr_get_security_label,
-	.set    = ceph_xattr_set_security_label,
-};
-#endif
-#endif
+#endif /* CONFIG_CEPH_FS_SECURITY_LABEL */
+#endif /* CONFIG_SECURITY */
 
 void ceph_release_acl_sec_ctx(struct ceph_acl_sec_ctx *as_ctx)
 {
@@ -1351,9 +1393,6 @@ const struct xattr_handler *ceph_xattr_handlers[] = {
 #ifdef CONFIG_CEPH_FS_POSIX_ACL
 	&posix_acl_access_xattr_handler,
 	&posix_acl_default_xattr_handler,
-#endif
-#ifdef CONFIG_CEPH_FS_SECURITY_LABEL
-	&ceph_security_label_handler,
 #endif
 	&ceph_other_xattr_handler,
 	NULL,

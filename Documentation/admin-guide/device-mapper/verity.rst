@@ -69,7 +69,7 @@ Construction Parameters
 
 <#opt_params>
     Number of optional parameters. If there are no optional parameters,
-    the optional paramaters section can be skipped or #opt_params can be zero.
+    the optional parameters section can be skipped or #opt_params can be zero.
     Otherwise #opt_params is the number of following arguments.
 
     Example of optional parameters section:
@@ -82,6 +82,10 @@ restart_on_corruption
     Restart the system when a corrupted block is discovered. This option is
     not compatible with ignore_corruption and requires user space support to
     avoid restart loops.
+
+panic_on_corruption
+    Panic the device when a corrupted block is discovered. This option is
+    not compatible with ignore_corruption and restart_on_corruption.
 
 ignore_zero_blocks
     Do not verify blocks that are expected to contain zeroes and always return
@@ -124,6 +128,18 @@ check_at_most_once
     since verification of hash blocks is less performance critical than data
     blocks, and a hash block will not be verified any more after all the data
     blocks it covers have been verified anyway.
+
+root_hash_sig_key_desc <key_description>
+    This is the description of the USER_KEY that the kernel will lookup to get
+    the pkcs7 signature of the roothash. The pkcs7 signature is used to validate
+    the root hash during the creation of the device mapper block device.
+    Verification of roothash depends on the config DM_VERITY_VERIFY_ROOTHASH_SIG
+    being set in the kernel.  The signatures are checked against the builtin
+    trusted keyring by default, or the secondary trusted keyring if
+    DM_VERITY_VERIFY_ROOTHASH_SIG_SECONDARY_KEYRING is set.  The secondary
+    trusted keyring includes by default the builtin trusted keyring, and it can
+    also gain new certificates at run time if they are signed by a certificate
+    already in the secondary trusted keyring.
 
 Theory of operation
 ===================

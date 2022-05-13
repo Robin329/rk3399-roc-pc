@@ -29,31 +29,26 @@
 
 static struct g2d_fmt formats[] = {
 	{
-		.name	= "XRGB_8888",
 		.fourcc	= V4L2_PIX_FMT_RGB32,
 		.depth	= 32,
 		.hw	= COLOR_MODE(ORDER_XRGB, MODE_XRGB_8888),
 	},
 	{
-		.name	= "RGB_565",
 		.fourcc	= V4L2_PIX_FMT_RGB565X,
 		.depth	= 16,
 		.hw	= COLOR_MODE(ORDER_XRGB, MODE_RGB_565),
 	},
 	{
-		.name	= "XRGB_1555",
 		.fourcc	= V4L2_PIX_FMT_RGB555X,
 		.depth	= 16,
 		.hw	= COLOR_MODE(ORDER_XRGB, MODE_XRGB_1555),
 	},
 	{
-		.name	= "XRGB_4444",
 		.fourcc	= V4L2_PIX_FMT_RGB444,
 		.depth	= 16,
 		.hw	= COLOR_MODE(ORDER_XRGB, MODE_XRGB_4444),
 	},
 	{
-		.name	= "PACKED_RGB_888",
 		.fourcc	= V4L2_PIX_FMT_RGB24,
 		.depth	= 24,
 		.hw	= COLOR_MODE(ORDER_XRGB, MODE_PACKED_RGB_888),
@@ -281,6 +276,9 @@ static int g2d_release(struct file *file)
 	struct g2d_dev *dev = video_drvdata(file);
 	struct g2d_ctx *ctx = fh2ctx(file->private_data);
 
+	mutex_lock(&dev->mutex);
+	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
+	mutex_unlock(&dev->mutex);
 	v4l2_ctrl_handler_free(&ctx->ctrl_handler);
 	v4l2_fh_del(&ctx->fh);
 	v4l2_fh_exit(&ctx->fh);
@@ -296,19 +294,14 @@ static int vidioc_querycap(struct file *file, void *priv,
 	strscpy(cap->driver, G2D_NAME, sizeof(cap->driver));
 	strscpy(cap->card, G2D_NAME, sizeof(cap->card));
 	cap->bus_info[0] = 0;
-	cap->device_caps = V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING;
-	cap->capabilities = cap->device_caps | V4L2_CAP_DEVICE_CAPS;
 	return 0;
 }
 
 static int vidioc_enum_fmt(struct file *file, void *prv, struct v4l2_fmtdesc *f)
 {
-	struct g2d_fmt *fmt;
 	if (f->index >= NUM_FORMATS)
 		return -EINVAL;
-	fmt = &formats[f->index];
-	f->pixelformat = fmt->fourcc;
-	strscpy(f->description, fmt->name, sizeof(f->description));
+	f->pixelformat = formats[f->index].fourcc;
 	return 0;
 }
 
@@ -642,9 +635,7 @@ static int g2d_probe(struct platform_device *pdev)
 	mutex_init(&dev->mutex);
 	atomic_set(&dev->num_inst, 0);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-
-	dev->regs = devm_ioremap_resource(&pdev->dev, res);
+	dev->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(dev->regs))
 		return PTR_ERR(dev->regs);
 
@@ -704,21 +695,14 @@ static int g2d_probe(struct platform_device *pdev)
 	set_bit(V4L2_FL_QUIRK_INVERTED_CROP, &vfd->flags);
 	vfd->lock = &dev->mutex;
 	vfd->v4l2_dev = &dev->v4l2_dev;
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, 0);
-	if (ret) {
-		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
-		goto rel_vdev;
-	}
-	video_set_drvdata(vfd, dev);
-	dev->vfd = vfd;
-	v4l2_info(&dev->v4l2_dev, "device registered as /dev/video%d\n",
-								vfd->num);
+	vfd->device_caps = V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING;
+
 	platform_set_drvdata(pdev, dev);
 	dev->m2m_dev = v4l2_m2m_init(&g2d_m2m_ops);
 	if (IS_ERR(dev->m2m_dev)) {
 		v4l2_err(&dev->v4l2_dev, "Failed to init mem2mem device\n");
 		ret = PTR_ERR(dev->m2m_dev);
-		goto unreg_video_dev;
+		goto rel_vdev;
 	}
 
 	def_frame.stride = (def_frame.width * def_frame.fmt->depth) >> 3;
@@ -726,14 +710,24 @@ static int g2d_probe(struct platform_device *pdev)
 	of_id = of_match_node(exynos_g2d_match, pdev->dev.of_node);
 	if (!of_id) {
 		ret = -ENODEV;
-		goto unreg_video_dev;
+		goto free_m2m;
 	}
 	dev->variant = (struct g2d_variant *)of_id->data;
 
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO, 0);
+	if (ret) {
+		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
+		goto free_m2m;
+	}
+	video_set_drvdata(vfd, dev);
+	dev->vfd = vfd;
+	v4l2_info(&dev->v4l2_dev, "device registered as /dev/video%d\n",
+		  vfd->num);
+
 	return 0;
 
-unreg_video_dev:
-	video_unregister_device(dev->vfd);
+free_m2m:
+	v4l2_m2m_release(dev->m2m_dev);
 rel_vdev:
 	video_device_release(vfd);
 unreg_v4l2_dev:

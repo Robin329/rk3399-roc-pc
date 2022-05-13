@@ -43,7 +43,7 @@ static struct tcf_pedit_key_ex *tcf_pedit_keys_ex_parse(struct nlattr *nla,
 	int err = -EINVAL;
 	int rem;
 
-	if (!nla || !n)
+	if (!nla)
 		return NULL;
 
 	keys_ex = kcalloc(n, sizeof(*k), GFP_KERNEL);
@@ -136,10 +136,11 @@ nla_failure:
 
 static int tcf_pedit_init(struct net *net, struct nlattr *nla,
 			  struct nlattr *est, struct tc_action **a,
-			  int ovr, int bind, bool rtnl_held,
-			  struct tcf_proto *tp, struct netlink_ext_ack *extack)
+			  struct tcf_proto *tp, u32 flags,
+			  struct netlink_ext_ack *extack)
 {
 	struct tc_action_net *tn = net_generic(net, pedit_net_id);
+	bool bind = flags & TCA_ACT_FLAGS_BIND;
 	struct nlattr *tb[TCA_PEDIT_MAX + 1];
 	struct tcf_chain *goto_ch = NULL;
 	struct tc_pedit_key *keys = NULL;
@@ -170,6 +171,10 @@ static int tcf_pedit_init(struct net *net, struct nlattr *nla,
 	}
 
 	parm = nla_data(pattr);
+	if (!parm->nkeys) {
+		NL_SET_ERR_MSG_MOD(extack, "Pedit requires keys to be passed");
+		return -EINVAL;
+	}
 	ksize = parm->nkeys * sizeof(struct tc_pedit_key);
 	if (nla_len(pattr) < sizeof(*parm) + ksize) {
 		NL_SET_ERR_MSG_ATTR(extack, pattr, "Length of TCA_PEDIT_PARMS or TCA_PEDIT_PARMS_EX pedit attribute is invalid");
@@ -183,14 +188,8 @@ static int tcf_pedit_init(struct net *net, struct nlattr *nla,
 	index = parm->index;
 	err = tcf_idr_check_alloc(tn, &index, a, bind);
 	if (!err) {
-		if (!parm->nkeys) {
-			tcf_idr_cleanup(tn, index);
-			NL_SET_ERR_MSG_MOD(extack, "Pedit requires keys to be passed");
-			ret = -EINVAL;
-			goto out_free;
-		}
 		ret = tcf_idr_create(tn, index, est, a,
-				     &act_pedit_ops, bind, false);
+				     &act_pedit_ops, bind, false, flags);
 		if (ret) {
 			tcf_idr_cleanup(tn, index);
 			goto out_free;
@@ -199,7 +198,7 @@ static int tcf_pedit_init(struct net *net, struct nlattr *nla,
 	} else if (err > 0) {
 		if (bind)
 			goto out_free;
-		if (!ovr) {
+		if (!(flags & TCA_ACT_FLAGS_REPLACE)) {
 			ret = -EEXIST;
 			goto out_release;
 		}
@@ -239,8 +238,6 @@ static int tcf_pedit_init(struct net *net, struct nlattr *nla,
 	spin_unlock_bh(&p->tcf_lock);
 	if (goto_ch)
 		tcf_chain_put_by_act(goto_ch);
-	if (ret == ACT_P_CREATED)
-		tcf_idr_insert(tn, *a);
 	return ret;
 
 put_chain:
@@ -410,6 +407,16 @@ done:
 	return p->tcf_action;
 }
 
+static void tcf_pedit_stats_update(struct tc_action *a, u64 bytes, u64 packets,
+				   u64 drops, u64 lastuse, bool hw)
+{
+	struct tcf_pedit *d = to_pedit(a);
+	struct tcf_t *tm = &d->tcf_tm;
+
+	tcf_action_update_stats(a, bytes, packets, drops, hw);
+	tm->lastuse = max_t(u64, tm->lastuse, lastuse);
+}
+
 static int tcf_pedit_dump(struct sk_buff *skb, struct tc_action *a,
 			  int bind, int ref)
 {
@@ -427,8 +434,7 @@ static int tcf_pedit_dump(struct sk_buff *skb, struct tc_action *a,
 		return -ENOBUFS;
 
 	spin_lock_bh(&p->tcf_lock);
-	memcpy(opt->keys, p->tcfp_keys,
-	       p->tcfp_nkeys * sizeof(struct tc_pedit_key));
+	memcpy(opt->keys, p->tcfp_keys, flex_array_size(opt, keys, p->tcfp_nkeys));
 	opt->index = p->tcf_index;
 	opt->nkeys = p->tcfp_nkeys;
 	opt->flags = p->tcfp_flags;
@@ -481,16 +487,51 @@ static int tcf_pedit_search(struct net *net, struct tc_action **a, u32 index)
 	return tcf_idr_search(tn, a, index);
 }
 
+static int tcf_pedit_offload_act_setup(struct tc_action *act, void *entry_data,
+				       u32 *index_inc, bool bind)
+{
+	if (bind) {
+		struct flow_action_entry *entry = entry_data;
+		int k;
+
+		for (k = 0; k < tcf_pedit_nkeys(act); k++) {
+			switch (tcf_pedit_cmd(act, k)) {
+			case TCA_PEDIT_KEY_EX_CMD_SET:
+				entry->id = FLOW_ACTION_MANGLE;
+				break;
+			case TCA_PEDIT_KEY_EX_CMD_ADD:
+				entry->id = FLOW_ACTION_ADD;
+				break;
+			default:
+				return -EOPNOTSUPP;
+			}
+			entry->mangle.htype = tcf_pedit_htype(act, k);
+			entry->mangle.mask = tcf_pedit_mask(act, k);
+			entry->mangle.val = tcf_pedit_val(act, k);
+			entry->mangle.offset = tcf_pedit_offset(act, k);
+			entry->hw_stats = tc_act_hw_stats(act->hw_stats);
+			entry++;
+		}
+		*index_inc = k;
+	} else {
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
 static struct tc_action_ops act_pedit_ops = {
 	.kind		=	"pedit",
 	.id		=	TCA_ID_PEDIT,
 	.owner		=	THIS_MODULE,
 	.act		=	tcf_pedit_act,
+	.stats_update	=	tcf_pedit_stats_update,
 	.dump		=	tcf_pedit_dump,
 	.cleanup	=	tcf_pedit_cleanup,
 	.init		=	tcf_pedit_init,
 	.walk		=	tcf_pedit_walker,
 	.lookup		=	tcf_pedit_search,
+	.offload_act_setup =	tcf_pedit_offload_act_setup,
 	.size		=	sizeof(struct tcf_pedit),
 };
 

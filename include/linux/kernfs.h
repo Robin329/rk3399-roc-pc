@@ -6,7 +6,6 @@
 #ifndef __LINUX_KERNFS_H
 #define __LINUX_KERNFS_H
 
-#include <linux/kernel.h>
 #include <linux/err.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -14,14 +13,18 @@
 #include <linux/lockdep.h>
 #include <linux/rbtree.h>
 #include <linux/atomic.h>
+#include <linux/bug.h>
+#include <linux/types.h>
 #include <linux/uidgid.h>
 #include <linux/wait.h>
+#include <linux/rwsem.h>
 
 struct file;
 struct dentry;
 struct iattr;
 struct seq_file;
 struct vm_area_struct;
+struct vm_operations_struct;
 struct super_block;
 struct file_system_type;
 struct poll_table_struct;
@@ -37,8 +40,10 @@ enum kernfs_node_type {
 	KERNFS_LINK		= 0x0004,
 };
 
-#define KERNFS_TYPE_MASK	0x000f
-#define KERNFS_FLAG_MASK	~KERNFS_TYPE_MASK
+#define KERNFS_TYPE_MASK		0x000f
+#define KERNFS_FLAG_MASK		~KERNFS_TYPE_MASK
+#define KERNFS_MAX_USER_XATTRS		128
+#define KERNFS_USER_XATTR_SIZE_LIMIT	(128 << 10)
 
 enum kernfs_node_flag {
 	KERNFS_ACTIVATED	= 0x0010,
@@ -78,6 +83,11 @@ enum kernfs_root_flag {
 	 * fhandle to access nodes of the fs.
 	 */
 	KERNFS_ROOT_SUPPORT_EXPORTOP		= 0x0004,
+
+	/*
+	 * Support user xattrs to be written to nodes rooted at this root.
+	 */
+	KERNFS_ROOT_SUPPORT_USER_XATTR		= 0x0008,
 };
 
 /* type-specific structures for kernfs_node union members */
@@ -91,6 +101,11 @@ struct kernfs_elem_dir {
 	 * better directly in kernfs_node but is here to save space.
 	 */
 	struct kernfs_root	*root;
+	/*
+	 * Monotonic revision counter, used to identify if a directory
+	 * node has changed during negative dentry revalidation.
+	 */
+	unsigned long		rev;
 };
 
 struct kernfs_elem_symlink {
@@ -104,27 +119,12 @@ struct kernfs_elem_attr {
 	struct kernfs_node	*notify_next;	/* for kernfs_notify() */
 };
 
-/* represent a kernfs node */
-union kernfs_node_id {
-	struct {
-		/*
-		 * blktrace will export this struct as a simplified 'struct
-		 * fid' (which is a big data struction), so userspace can use
-		 * it to find kernfs node. The layout must match the first two
-		 * fields of 'struct fid' exactly.
-		 */
-		u32		ino;
-		u32		generation;
-	};
-	u64			id;
-};
-
 /*
  * kernfs_node - the building block of kernfs hierarchy.  Each and every
  * kernfs node is represented by single kernfs_node.  Most fields are
  * private to kernfs and shouldn't be accessed directly by kernfs users.
  *
- * As long as s_count reference is held, the kernfs_node itself is
+ * As long as count reference is held, the kernfs_node itself is
  * accessible.  Dereferencing elem or any other outer entity requires
  * active reference.
  */
@@ -155,7 +155,12 @@ struct kernfs_node {
 
 	void			*priv;
 
-	union kernfs_node_id	id;
+	/*
+	 * 64bit unique ID.  On 64bit ino setups, id is the ino.  On 32bit,
+	 * the low 32bits are ino and upper generation.
+	 */
+	u64			id;
+
 	unsigned short		flags;
 	umode_t			mode;
 	struct kernfs_iattrs	*iattr;
@@ -187,13 +192,15 @@ struct kernfs_root {
 
 	/* private fields, do not use outside kernfs proper */
 	struct idr		ino_idr;
-	u32			next_generation;
+	u32			last_id_lowbits;
+	u32			id_highbits;
 	struct kernfs_syscall_ops *syscall_ops;
 
-	/* list of kernfs_super_info of this root, protected by kernfs_mutex */
+	/* list of kernfs_super_info of this root, protected by kernfs_rwsem */
 	struct list_head	supers;
 
 	wait_queue_head_t	deactivate_waitq;
+	struct rw_semaphore	kernfs_rwsem;
 };
 
 struct kernfs_open_file {
@@ -266,10 +273,6 @@ struct kernfs_ops {
 			 struct poll_table_struct *pt);
 
 	int (*mmap)(struct kernfs_open_file *of, struct vm_area_struct *vma);
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-	struct lock_class_key	lockdep_key;
-#endif
 };
 
 /*
@@ -289,6 +292,34 @@ struct kernfs_fs_context {
 static inline enum kernfs_node_type kernfs_type(struct kernfs_node *kn)
 {
 	return kn->flags & KERNFS_TYPE_MASK;
+}
+
+static inline ino_t kernfs_id_ino(u64 id)
+{
+	/* id is ino if ino_t is 64bit; otherwise, low 32bits */
+	if (sizeof(ino_t) >= sizeof(u64))
+		return id;
+	else
+		return (u32)id;
+}
+
+static inline u32 kernfs_id_gen(u64 id)
+{
+	/* gen is fixed at 1 if ino_t is 64bit; otherwise, high 32bits */
+	if (sizeof(ino_t) >= sizeof(u64))
+		return 1;
+	else
+		return id >> 32;
+}
+
+static inline ino_t kernfs_ino(struct kernfs_node *kn)
+{
+	return kernfs_id_ino(kn->id);
+}
+
+static inline ino_t kernfs_gen(struct kernfs_node *kn)
+{
+	return kernfs_id_gen(kn->id);
 }
 
 /**
@@ -382,8 +413,8 @@ void kernfs_kill_sb(struct super_block *sb);
 
 void kernfs_init(void);
 
-struct kernfs_node *kernfs_get_node_by_id(struct kernfs_root *root,
-	const union kernfs_node_id *id);
+struct kernfs_node *kernfs_find_and_get_node_by_id(struct kernfs_root *root,
+						   u64 id);
 #else	/* CONFIG_KERNFS */
 
 static inline enum kernfs_node_type kernfs_type(struct kernfs_node *kn)
@@ -535,30 +566,6 @@ kernfs_create_dir(struct kernfs_node *parent, const char *name, umode_t mode,
 	return kernfs_create_dir_ns(parent, name, mode,
 				    GLOBAL_ROOT_UID, GLOBAL_ROOT_GID,
 				    priv, NULL);
-}
-
-static inline struct kernfs_node *
-kernfs_create_file_ns(struct kernfs_node *parent, const char *name,
-		      umode_t mode, kuid_t uid, kgid_t gid,
-		      loff_t size, const struct kernfs_ops *ops,
-		      void *priv, const void *ns)
-{
-	struct lock_class_key *key = NULL;
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-	key = (struct lock_class_key *)&ops->lockdep_key;
-#endif
-	return __kernfs_create_file(parent, name, mode, uid, gid,
-				    size, ops, priv, ns, key);
-}
-
-static inline struct kernfs_node *
-kernfs_create_file(struct kernfs_node *parent, const char *name, umode_t mode,
-		   loff_t size, const struct kernfs_ops *ops, void *priv)
-{
-	return kernfs_create_file_ns(parent, name, mode,
-				     GLOBAL_ROOT_UID, GLOBAL_ROOT_GID,
-				     size, ops, priv, NULL);
 }
 
 static inline int kernfs_remove_by_name(struct kernfs_node *parent,

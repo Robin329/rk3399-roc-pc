@@ -6,7 +6,7 @@
  * Copyright (c) 2006-2007 Greg Kroah-Hartman <greg@kroah.com>
  * Copyright (c) 2006-2007 Novell Inc.
  *
- * Please see the file Documentation/kobject.txt for critical information
+ * Please see the file Documentation/core-api/kobject.rst for critical information
  * about using the kobject interface.
  */
 
@@ -65,7 +65,7 @@ void kobject_get_ownership(struct kobject *kobj, kuid_t *uid, kgid_t *gid)
  */
 static int populate_dir(struct kobject *kobj)
 {
-	struct kobj_type *t = get_ktype(kobj);
+	const struct kobj_type *t = get_ktype(kobj);
 	struct attribute *attr;
 	int error = 0;
 	int i;
@@ -346,7 +346,7 @@ EXPORT_SYMBOL(kobject_set_name);
  * to kobject_put(), not by a call to kfree directly to ensure that all of
  * the memory is cleaned up properly.
  */
-void kobject_init(struct kobject *kobj, struct kobj_type *ktype)
+void kobject_init(struct kobject *kobj, const struct kobj_type *ktype)
 {
 	char *err_str;
 
@@ -461,7 +461,7 @@ EXPORT_SYMBOL(kobject_add);
  * same type of error handling after a call to kobject_add() and kobject
  * lifetime rules are the same here.
  */
-int kobject_init_and_add(struct kobject *kobj, struct kobj_type *ktype,
+int kobject_init_and_add(struct kobject *kobj, const struct kobj_type *ktype,
 			 struct kobject *parent, const char *fmt, ...)
 {
 	va_list args;
@@ -599,6 +599,32 @@ out:
 }
 EXPORT_SYMBOL_GPL(kobject_move);
 
+static void __kobject_del(struct kobject *kobj)
+{
+	struct kernfs_node *sd;
+	const struct kobj_type *ktype;
+
+	sd = kobj->sd;
+	ktype = get_ktype(kobj);
+
+	if (ktype)
+		sysfs_remove_groups(kobj, ktype->default_groups);
+
+	/* send "remove" if the caller did not do it but sent "add" */
+	if (kobj->state_add_uevent_sent && !kobj->state_remove_uevent_sent) {
+		pr_debug("kobject: '%s' (%p): auto cleanup 'remove' event\n",
+			 kobject_name(kobj), kobj);
+		kobject_uevent(kobj, KOBJ_REMOVE);
+	}
+
+	sysfs_remove_dir(kobj);
+	sysfs_put(sd);
+
+	kobj->state_in_sysfs = 0;
+	kobj_kset_leave(kobj);
+	kobj->parent = NULL;
+}
+
 /**
  * kobject_del() - Unlink kobject from hierarchy.
  * @kobj: object.
@@ -608,25 +634,14 @@ EXPORT_SYMBOL_GPL(kobject_move);
  */
 void kobject_del(struct kobject *kobj)
 {
-	struct kernfs_node *sd;
-	const struct kobj_type *ktype;
+	struct kobject *parent;
 
 	if (!kobj)
 		return;
 
-	sd = kobj->sd;
-	ktype = get_ktype(kobj);
-
-	if (ktype)
-		sysfs_remove_groups(kobj, ktype->default_groups);
-
-	sysfs_remove_dir(kobj);
-	sysfs_put(sd);
-
-	kobj->state_in_sysfs = 0;
-	kobj_kset_leave(kobj);
-	kobject_put(kobj->parent);
-	kobj->parent = NULL;
+	parent = kobj->parent;
+	__kobject_del(kobj);
+	kobject_put(parent);
 }
 EXPORT_SYMBOL(kobject_del);
 
@@ -663,28 +678,25 @@ EXPORT_SYMBOL(kobject_get_unless_zero);
  */
 static void kobject_cleanup(struct kobject *kobj)
 {
-	struct kobj_type *t = get_ktype(kobj);
+	struct kobject *parent = kobj->parent;
+	const struct kobj_type *t = get_ktype(kobj);
 	const char *name = kobj->name;
 
 	pr_debug("kobject: '%s' (%p): %s, parent %p\n",
 		 kobject_name(kobj), kobj, __func__, kobj->parent);
 
 	if (t && !t->release)
-		pr_debug("kobject: '%s' (%p): does not have a release() function, it is broken and must be fixed. See Documentation/kobject.txt.\n",
+		pr_debug("kobject: '%s' (%p): does not have a release() function, it is broken and must be fixed. See Documentation/core-api/kobject.rst.\n",
 			 kobject_name(kobj), kobj);
-
-	/* send "remove" if the caller did not do it but sent "add" */
-	if (kobj->state_add_uevent_sent && !kobj->state_remove_uevent_sent) {
-		pr_debug("kobject: '%s' (%p): auto cleanup 'remove' event\n",
-			 kobject_name(kobj), kobj);
-		kobject_uevent(kobj, KOBJ_REMOVE);
-	}
 
 	/* remove from sysfs if the caller did not do it */
 	if (kobj->state_in_sysfs) {
 		pr_debug("kobject: '%s' (%p): auto cleanup kobject_del\n",
 			 kobject_name(kobj), kobj);
-		kobject_del(kobj);
+		__kobject_del(kobj);
+	} else {
+		/* avoid dropping the parent reference unnecessarily */
+		parent = NULL;
 	}
 
 	if (t && t->release) {
@@ -698,6 +710,8 @@ static void kobject_cleanup(struct kobject *kobj)
 		pr_debug("kobject: '%s': free name\n", name);
 		kfree_const(name);
 	}
+
+	kobject_put(parent);
 }
 
 #ifdef CONFIG_DEBUG_KOBJECT_RELEASE
@@ -763,7 +777,7 @@ static struct kobj_type dynamic_kobj_ktype = {
  * call to kobject_put() and not kfree(), as kobject_init() has
  * already been called on this structure.
  */
-struct kobject *kobject_create(void)
+static struct kobject *kobject_create(void)
 {
 	struct kobject *kobj;
 

@@ -19,10 +19,6 @@
  */
 
 
-#if defined(CONFIG_SERIAL_PXA_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
-#define SUPPORT_SYSRQ
-#endif
-
 #include <linux/ioport.h>
 #include <linux/init.h>
 #include <linux/console.h>
@@ -846,13 +842,17 @@ static int serial_pxa_probe_dt(struct platform_device *pdev,
 static int serial_pxa_probe(struct platform_device *dev)
 {
 	struct uart_pxa_port *sport;
-	struct resource *mmres, *irqres;
+	struct resource *mmres;
 	int ret;
+	int irq;
 
 	mmres = platform_get_resource(dev, IORESOURCE_MEM, 0);
-	irqres = platform_get_resource(dev, IORESOURCE_IRQ, 0);
-	if (!mmres || !irqres)
+	if (!mmres)
 		return -ENODEV;
+
+	irq = platform_get_irq(dev, 0);
+	if (irq < 0)
+		return irq;
 
 	sport = kzalloc(sizeof(struct uart_pxa_port), GFP_KERNEL);
 	if (!sport)
@@ -873,12 +873,13 @@ static int serial_pxa_probe(struct platform_device *dev)
 	sport->port.type = PORT_PXA;
 	sport->port.iotype = UPIO_MEM;
 	sport->port.mapbase = mmres->start;
-	sport->port.irq = irqres->start;
+	sport->port.irq = irq;
 	sport->port.fifosize = 64;
 	sport->port.ops = &serial_pxa_pops;
 	sport->port.dev = &dev->dev;
 	sport->port.flags = UPF_IOREMAP | UPF_BOOT_AUTOCONF;
 	sport->port.uartclk = clk_get_rate(sport->clk);
+	sport->port.has_sysrq = IS_ENABLED(CONFIG_SERIAL_PXA_CONSOLE);
 
 	ret = serial_pxa_probe_dt(dev, sport);
 	if (ret > 0)

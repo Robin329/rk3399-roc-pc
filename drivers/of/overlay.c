@@ -57,7 +57,7 @@ struct fragment {
  * struct overlay_changeset
  * @id:			changeset identifier
  * @ovcs_list:		list on which we are located
- * @fdt:		FDT that was unflattened to create @overlay_tree
+ * @fdt:		base of memory allocated to hold aligned FDT that was unflattened to create @overlay_tree
  * @overlay_tree:	expanded device tree that contains the fragment nodes
  * @count:		count of fragment structures
  * @fragments:		fragment nodes in the overlay expanded device tree
@@ -140,7 +140,7 @@ int of_overlay_notifier_register(struct notifier_block *nb)
 EXPORT_SYMBOL_GPL(of_overlay_notifier_register);
 
 /**
- * of_overlay_notifier_register() - Unregister notifier for overlay operations
+ * of_overlay_notifier_unregister() - Unregister notifier for overlay operations
  * @nb:		Notifier block to unregister
  */
 int of_overlay_notifier_unregister(struct notifier_block *nb)
@@ -261,6 +261,8 @@ static struct property *dup_and_fixup_symbol_prop(
 
 	of_property_set_flag(new_prop, OF_DYNAMIC);
 
+	kfree(target_path);
+
 	return new_prop;
 
 err_free_new_prop:
@@ -296,7 +298,7 @@ err_free_target_path:
  *
  * Update of property in symbols node is not allowed.
  *
- * Returns 0 on success, -ENOMEM if memory allocation failure, or -EINVAL if
+ * Return: 0 on success, -ENOMEM if memory allocation failure, or -EINVAL if
  * invalid @overlay.
  */
 static int add_changeset_property(struct overlay_changeset *ovcs,
@@ -305,7 +307,6 @@ static int add_changeset_property(struct overlay_changeset *ovcs,
 {
 	struct property *new_prop = NULL, *prop;
 	int ret = 0;
-	bool check_for_non_overlay_node = false;
 
 	if (target->in_livetree)
 		if (!of_prop_cmp(overlay_prop->name, "name") ||
@@ -317,6 +318,25 @@ static int add_changeset_property(struct overlay_changeset *ovcs,
 		prop = of_find_property(target->np, overlay_prop->name, NULL);
 	else
 		prop = NULL;
+
+	if (prop) {
+		if (!of_prop_cmp(prop->name, "#address-cells")) {
+			if (!of_prop_val_eq(prop, overlay_prop)) {
+				pr_err("ERROR: changing value of #address-cells is not allowed in %pOF\n",
+				       target->np);
+				ret = -EINVAL;
+			}
+			return ret;
+
+		} else if (!of_prop_cmp(prop->name, "#size-cells")) {
+			if (!of_prop_val_eq(prop, overlay_prop)) {
+				pr_err("ERROR: changing value of #size-cells is not allowed in %pOF\n",
+				       target->np);
+				ret = -EINVAL;
+			}
+			return ret;
+		}
+	}
 
 	if (is_symbols_prop) {
 		if (prop)
@@ -330,33 +350,18 @@ static int add_changeset_property(struct overlay_changeset *ovcs,
 		return -ENOMEM;
 
 	if (!prop) {
-		check_for_non_overlay_node = true;
 		if (!target->in_livetree) {
 			new_prop->next = target->np->deadprops;
 			target->np->deadprops = new_prop;
 		}
 		ret = of_changeset_add_property(&ovcs->cset, target->np,
 						new_prop);
-	} else if (!of_prop_cmp(prop->name, "#address-cells")) {
-		if (!of_prop_val_eq(prop, new_prop)) {
-			pr_err("ERROR: changing value of #address-cells is not allowed in %pOF\n",
-			       target->np);
-			ret = -EINVAL;
-		}
-	} else if (!of_prop_cmp(prop->name, "#size-cells")) {
-		if (!of_prop_val_eq(prop, new_prop)) {
-			pr_err("ERROR: changing value of #size-cells is not allowed in %pOF\n",
-			       target->np);
-			ret = -EINVAL;
-		}
 	} else {
-		check_for_non_overlay_node = true;
 		ret = of_changeset_update_property(&ovcs->cset, target->np,
 						   new_prop);
 	}
 
-	if (check_for_non_overlay_node &&
-	    !of_node_check_flag(target->np, OF_OVERLAY))
+	if (!of_node_check_flag(target->np, OF_OVERLAY))
 		pr_err("WARNING: memory leak will occur if overlay removed, property: %pOF/%s\n",
 		       target->np, new_prop->name);
 
@@ -398,7 +403,7 @@ static int add_changeset_property(struct overlay_changeset *ovcs,
  *
  * NOTE_2: Multiple mods of created nodes not supported.
  *
- * Returns 0 on success, -ENOMEM if memory allocation failure, or -EINVAL if
+ * Return: 0 on success, -ENOMEM if memory allocation failure, or -EINVAL if
  * invalid @overlay.
  */
 static int add_changeset_node(struct overlay_changeset *ovcs,
@@ -470,7 +475,7 @@ static int add_changeset_node(struct overlay_changeset *ovcs,
  *
  * Do not allow symbols node to have any children.
  *
- * Returns 0 on success, -ENOMEM if memory allocation failure, or -EINVAL if
+ * Return: 0 on success, -ENOMEM if memory allocation failure, or -EINVAL if
  * invalid @overlay_node.
  */
 static int build_changeset_next_level(struct overlay_changeset *ovcs,
@@ -601,7 +606,7 @@ static int find_dup_cset_prop(struct overlay_changeset *ovcs,
  * the same node or duplicate {add, delete, or update} properties entries
  * for the same property.
  *
- * Returns 0 on success, or -EINVAL if duplicate changeset entry found.
+ * Return: 0 on success, or -EINVAL if duplicate changeset entry found.
  */
 static int changeset_dup_entry_check(struct overlay_changeset *ovcs)
 {
@@ -625,7 +630,7 @@ static int changeset_dup_entry_check(struct overlay_changeset *ovcs)
  * any portions of the changeset that were successfully created will remain
  * in @ovcs->cset.
  *
- * Returns 0 on success, -ENOMEM if memory allocation failure, or -EINVAL if
+ * Return: 0 on success, -ENOMEM if memory allocation failure, or -EINVAL if
  * invalid overlay in @ovcs->fragments[].
  */
 static int build_changeset(struct overlay_changeset *ovcs)
@@ -714,14 +719,14 @@ static struct device_node *find_target(struct device_node *info_node)
 /**
  * init_overlay_changeset() - initialize overlay changeset from overlay tree
  * @ovcs:	Overlay changeset to build
- * @fdt:	the FDT that was unflattened to create @tree
- * @tree:	Contains all the overlay fragments and overlay fixup nodes
+ * @fdt:	base of memory allocated to hold aligned FDT that was unflattened to create @tree
+ * @tree:	Contains the overlay fragments and overlay fixup nodes
  *
  * Initialize @ovcs.  Populate @ovcs->fragments with node information from
  * the top level of @tree.  The relevant top level nodes are the fragment
  * nodes and the __symbols__ node.  Any other top level node will be ignored.
  *
- * Returns 0 on success, -ENOMEM if memory allocation failure, -EINVAL if error
+ * Return: 0 on success, -ENOMEM if memory allocation failure, -EINVAL if error
  * detected in @tree, or -ENOSPC if idr_alloc() error.
  */
 static int init_overlay_changeset(struct overlay_changeset *ovcs,
@@ -791,6 +796,7 @@ static int init_overlay_changeset(struct overlay_changeset *ovcs,
 		if (!fragment->target) {
 			of_node_put(fragment->overlay);
 			ret = -EINVAL;
+			of_node_put(node);
 			goto err_free_fragments;
 		}
 
@@ -868,7 +874,7 @@ static void free_overlay_changeset(struct overlay_changeset *ovcs)
  * internal documentation
  *
  * of_overlay_apply() - Create and apply an overlay changeset
- * @fdt:	the FDT that was unflattened to create @tree
+ * @fdt:	base of memory allocated to hold the aligned FDT
  * @tree:	Expanded overlay device tree
  * @ovcs_id:	Pointer to overlay changeset id
  *
@@ -948,7 +954,9 @@ static int of_overlay_apply(const void *fdt, struct device_node *tree,
 	/*
 	 * after overlay_notify(), ovcs->overlay_tree related pointers may have
 	 * leaked to drivers, so can not kfree() tree, aka ovcs->overlay_tree;
-	 * and can not free fdt, aka ovcs->fdt
+	 * and can not free memory containing aligned fdt.  The aligned fdt
+	 * is contained within the memory at ovcs->fdt, possibly at an offset
+	 * from ovcs->fdt.
 	 */
 	ret = overlay_notify(ovcs, OF_OVERLAY_PRE_APPLY);
 	if (ret) {
@@ -970,8 +978,6 @@ static int of_overlay_apply(const void *fdt, struct device_node *tree,
 		}
 		goto err_free_overlay_changeset;
 	}
-
-	of_populate_phandle_cache();
 
 	ret = __of_changeset_apply_notify(&ovcs->cset);
 	if (ret)
@@ -1011,13 +1017,13 @@ out:
 int of_overlay_fdt_apply(const void *overlay_fdt, u32 overlay_fdt_size,
 			 int *ovcs_id)
 {
-	const void *new_fdt;
+	void *new_fdt;
+	void *new_fdt_align;
 	int ret;
 	u32 size;
-	struct device_node *overlay_root;
+	struct device_node *overlay_root = NULL;
 
 	*ovcs_id = 0;
-	ret = 0;
 
 	if (overlay_fdt_size < sizeof(struct fdt_header) ||
 	    fdt_check_header(overlay_fdt)) {
@@ -1033,11 +1039,14 @@ int of_overlay_fdt_apply(const void *overlay_fdt, u32 overlay_fdt_size,
 	 * Must create permanent copy of FDT because of_fdt_unflatten_tree()
 	 * will create pointers to the passed in FDT in the unflattened tree.
 	 */
-	new_fdt = kmemdup(overlay_fdt, size, GFP_KERNEL);
+	new_fdt = kmalloc(size + FDT_ALIGN_SIZE, GFP_KERNEL);
 	if (!new_fdt)
 		return -ENOMEM;
 
-	of_fdt_unflatten_tree(new_fdt, NULL, &overlay_root);
+	new_fdt_align = PTR_ALIGN(new_fdt, FDT_ALIGN_SIZE);
+	memcpy(new_fdt_align, overlay_fdt, size);
+
+	of_fdt_unflatten_tree(new_fdt_align, NULL, &overlay_root);
 	if (!overlay_root) {
 		pr_err("unable to unflatten overlay_fdt\n");
 		ret = -EINVAL;
@@ -1177,15 +1186,13 @@ static int overlay_removal_is_ok(struct overlay_changeset *remove_ovcs)
  * If an error is returned by an overlay changeset post-remove notifier
  * then no further overlay changeset post-remove notifier will be called.
  *
- * Returns 0 on success, or a negative error number.  *ovcs_id is set to
+ * Return: 0 on success, or a negative error number.  *@ovcs_id is set to
  * zero after reverting the changeset, even if a subsequent error occurs.
  */
 int of_overlay_remove(int *ovcs_id)
 {
 	struct overlay_changeset *ovcs;
 	int ret, ret_apply, ret_tmp;
-
-	ret = 0;
 
 	if (devicetree_corrupt()) {
 		pr_err("suspect devicetree state, refuse to remove overlay\n");
@@ -1215,17 +1222,8 @@ int of_overlay_remove(int *ovcs_id)
 
 	list_del(&ovcs->ovcs_list);
 
-	/*
-	 * Disable phandle cache.  Avoids race condition that would arise
-	 * from removing cache entry when the associated node is deleted.
-	 */
-	of_free_phandle_cache();
-
 	ret_apply = 0;
 	ret = __of_changeset_revert_entries(&ovcs->cset, &ret_apply);
-
-	of_populate_phandle_cache();
-
 	if (ret) {
 		if (ret_apply)
 			devicetree_state_flags |= DTSF_REVERT_FAIL;
@@ -1264,7 +1262,7 @@ EXPORT_SYMBOL_GPL(of_overlay_remove);
  *
  * Removes all overlays from the system in the correct order.
  *
- * Returns 0 on success, or a negative error number
+ * Return: 0 on success, or a negative error number
  */
 int of_overlay_remove_all(void)
 {

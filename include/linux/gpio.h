@@ -102,11 +102,9 @@ void devm_gpio_free(struct device *dev, unsigned int gpio);
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/bug.h>
-#include <linux/pinctrl/pinctrl.h>
 
 struct device;
 struct gpio_chip;
-struct pinctrl_dev;
 
 static inline bool gpio_is_valid(int number)
 {
@@ -219,19 +217,6 @@ static inline int gpio_to_irq(unsigned gpio)
 	/* GPIO can never have been requested or set as input */
 	WARN_ON(1);
 	return -EINVAL;
-}
-
-static inline int gpiochip_lock_as_irq(struct gpio_chip *chip,
-				       unsigned int offset)
-{
-	WARN_ON(1);
-	return -EINVAL;
-}
-
-static inline void gpiochip_unlock_as_irq(struct gpio_chip *chip,
-					  unsigned int offset)
-{
-	WARN_ON(1);
 }
 
 static inline int irq_to_gpio(unsigned irq)

@@ -8,7 +8,7 @@
 
 enum nf_ct_ext_id {
 	NF_CT_EXT_HELPER,
-#if defined(CONFIG_NF_NAT) || defined(CONFIG_NF_NAT_MODULE)
+#if IS_ENABLED(CONFIG_NF_NAT)
 	NF_CT_EXT_NAT,
 #endif
 	NF_CT_EXT_SEQADJ,
@@ -28,6 +28,9 @@ enum nf_ct_ext_id {
 #if IS_ENABLED(CONFIG_NETFILTER_SYNPROXY)
 	NF_CT_EXT_SYNPROXY,
 #endif
+#if IS_ENABLED(CONFIG_NET_ACT_CT)
+	NF_CT_EXT_ACT_CT,
+#endif
 	NF_CT_EXT_NUM,
 };
 
@@ -40,13 +43,13 @@ enum nf_ct_ext_id {
 #define NF_CT_EXT_TIMEOUT_TYPE struct nf_conn_timeout
 #define NF_CT_EXT_LABELS_TYPE struct nf_conn_labels
 #define NF_CT_EXT_SYNPROXY_TYPE struct nf_conn_synproxy
+#define NF_CT_EXT_ACT_CT_TYPE struct nf_conn_act_ct_ext
 
 /* Extensions: optional stuff which isn't permanently in struct. */
 struct nf_ct_ext {
-	struct rcu_head rcu;
 	u8 offset[NF_CT_EXT_NUM];
 	u8 len;
-	char data[0];
+	char data[];
 };
 
 static inline bool __nf_ct_ext_exist(const struct nf_ct_ext *ext, u8 id)
@@ -71,15 +74,6 @@ static inline void *__nf_ct_ext_find(const struct nf_conn *ct, u8 id)
 
 /* Destroy all relationships */
 void nf_ct_ext_destroy(struct nf_conn *ct);
-
-/* Free operation. If you want to free a object referred from private area,
- * please implement __nf_ct_ext_free() and call it.
- */
-static inline void nf_ct_ext_free(struct nf_conn *ct)
-{
-	if (ct->ext)
-		kfree_rcu(ct->ext, rcu);
-}
 
 /* Add this type, returns pointer to data or NULL. */
 void *nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp);

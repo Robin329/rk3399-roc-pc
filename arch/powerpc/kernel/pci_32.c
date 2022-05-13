@@ -37,7 +37,7 @@ int pcibios_assign_bus_offset = 1;
 EXPORT_SYMBOL(isa_io_base);
 EXPORT_SYMBOL(pci_dram_offset);
 
-void pcibios_make_OF_bus_map(void);
+void __init pcibios_make_OF_bus_map(void);
 
 static void fixup_cpc710_pci64(struct pci_dev* dev);
 static u8* pci_to_OF_bus_map;
@@ -109,7 +109,7 @@ make_one_node_map(struct device_node* node, u8 pci_bus)
 	}
 }
 	
-void
+void __init
 pcibios_make_OF_bus_map(void)
 {
 	int i;
@@ -262,6 +262,10 @@ static int __init pcibios_init(void)
 
 	/* Call common code to handle resource allocation */
 	pcibios_resource_survey();
+
+	/* Call machine dependent fixup */
+	if (ppc_md.pcibios_fixup)
+		ppc_md.pcibios_fixup();
 
 	/* Call machine dependent post-init code */
 	if (ppc_md.pcibios_after_init)

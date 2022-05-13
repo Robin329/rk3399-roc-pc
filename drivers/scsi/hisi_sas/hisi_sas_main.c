@@ -15,7 +15,7 @@ static int hisi_sas_debug_issue_ssp_tmf(struct domain_device *device,
 static int
 hisi_sas_internal_task_abort(struct hisi_hba *hisi_hba,
 			     struct domain_device *device,
-			     int abort_flag, int tag);
+			     int abort_flag, int tag, bool rst_to_recover);
 static int hisi_sas_softreset_ata_disk(struct domain_device *device);
 static int hisi_sas_control_phy(struct asd_sas_phy *sas_phy, enum phy_func func,
 				void *funcdata);
@@ -118,21 +118,6 @@ void hisi_sas_sata_done(struct sas_task *task,
 }
 EXPORT_SYMBOL_GPL(hisi_sas_sata_done);
 
-int hisi_sas_get_ncq_tag(struct sas_task *task, u32 *tag)
-{
-	struct ata_queued_cmd *qc = task->uldd_task;
-
-	if (qc) {
-		if (qc->tf.command == ATA_CMD_FPDMA_WRITE ||
-			qc->tf.command == ATA_CMD_FPDMA_READ) {
-			*tag = qc->tag;
-			return 1;
-		}
-	}
-	return 0;
-}
-EXPORT_SYMBOL_GPL(hisi_sas_get_ncq_tag);
-
 /*
  * This function assumes linkrate mask fits in 8 bits, which it
  * does for all HW versions supported.
@@ -173,18 +158,16 @@ static void hisi_sas_slot_index_clear(struct hisi_hba *hisi_hba, int slot_idx)
 {
 	void *bitmap = hisi_hba->slot_index_tags;
 
-	clear_bit(slot_idx, bitmap);
+	__clear_bit(slot_idx, bitmap);
 }
 
 static void hisi_sas_slot_index_free(struct hisi_hba *hisi_hba, int slot_idx)
 {
-	unsigned long flags;
-
-	if (hisi_hba->hw->slot_index_alloc || (slot_idx >=
-	    hisi_hba->hw->max_command_entries - HISI_SAS_RESERVED_IPTT_CNT)) {
-		spin_lock_irqsave(&hisi_hba->lock, flags);
+	if (hisi_hba->hw->slot_index_alloc ||
+	    slot_idx >= HISI_SAS_UNRESERVED_IPTT) {
+		spin_lock(&hisi_hba->lock);
 		hisi_sas_slot_index_clear(hisi_hba, slot_idx);
-		spin_unlock_irqrestore(&hisi_hba->lock, flags);
+		spin_unlock(&hisi_hba->lock);
 	}
 }
 
@@ -192,7 +175,7 @@ static void hisi_sas_slot_index_set(struct hisi_hba *hisi_hba, int slot_idx)
 {
 	void *bitmap = hisi_hba->slot_index_tags;
 
-	set_bit(slot_idx, bitmap);
+	__set_bit(slot_idx, bitmap);
 }
 
 static int hisi_sas_slot_index_alloc(struct hisi_hba *hisi_hba,
@@ -200,43 +183,32 @@ static int hisi_sas_slot_index_alloc(struct hisi_hba *hisi_hba,
 {
 	int index;
 	void *bitmap = hisi_hba->slot_index_tags;
-	unsigned long flags;
 
 	if (scsi_cmnd)
-		return scsi_cmnd->request->tag;
+		return scsi_cmd_to_rq(scsi_cmnd)->tag;
 
-	spin_lock_irqsave(&hisi_hba->lock, flags);
+	spin_lock(&hisi_hba->lock);
 	index = find_next_zero_bit(bitmap, hisi_hba->slot_index_count,
 				   hisi_hba->last_slot_index + 1);
 	if (index >= hisi_hba->slot_index_count) {
 		index = find_next_zero_bit(bitmap,
 				hisi_hba->slot_index_count,
-				hisi_hba->hw->max_command_entries -
-				HISI_SAS_RESERVED_IPTT_CNT);
+				HISI_SAS_UNRESERVED_IPTT);
 		if (index >= hisi_hba->slot_index_count) {
-			spin_unlock_irqrestore(&hisi_hba->lock, flags);
+			spin_unlock(&hisi_hba->lock);
 			return -SAS_QUEUE_FULL;
 		}
 	}
 	hisi_sas_slot_index_set(hisi_hba, index);
 	hisi_hba->last_slot_index = index;
-	spin_unlock_irqrestore(&hisi_hba->lock, flags);
+	spin_unlock(&hisi_hba->lock);
 
 	return index;
-}
-
-static void hisi_sas_slot_index_init(struct hisi_hba *hisi_hba)
-{
-	int i;
-
-	for (i = 0; i < hisi_hba->slot_index_count; ++i)
-		hisi_sas_slot_index_clear(hisi_hba, i);
 }
 
 void hisi_sas_slot_task_free(struct hisi_hba *hisi_hba, struct sas_task *task,
 			     struct hisi_sas_slot *slot)
 {
-	unsigned long flags;
 	int device_id = slot->device_id;
 	struct hisi_sas_device *sas_dev = &hisi_hba->devices[device_id];
 
@@ -249,23 +221,24 @@ void hisi_sas_slot_task_free(struct hisi_hba *hisi_hba, struct sas_task *task,
 		task->lldd_task = NULL;
 
 		if (!sas_protocol_ata(task->task_proto)) {
-			struct sas_ssp_task *ssp_task = &task->ssp_task;
-			struct scsi_cmnd *scsi_cmnd = ssp_task->cmd;
-
 			if (slot->n_elem)
 				dma_unmap_sg(dev, task->scatter,
 					     task->num_scatter,
 					     task->data_dir);
-			if (slot->n_elem_dif)
+			if (slot->n_elem_dif) {
+				struct sas_ssp_task *ssp_task = &task->ssp_task;
+				struct scsi_cmnd *scsi_cmnd = ssp_task->cmd;
+
 				dma_unmap_sg(dev, scsi_prot_sglist(scsi_cmnd),
 					     scsi_prot_sg_count(scsi_cmnd),
 					     task->data_dir);
+			}
 		}
 	}
 
-	spin_lock_irqsave(&sas_dev->lock, flags);
+	spin_lock(&sas_dev->lock);
 	list_del_init(&slot->entry);
-	spin_unlock_irqrestore(&sas_dev->lock, flags);
+	spin_unlock(&sas_dev->lock);
 
 	memset(slot, 0, offsetof(struct hisi_sas_slot, buf));
 
@@ -292,16 +265,16 @@ static void hisi_sas_task_prep_ata(struct hisi_hba *hisi_hba,
 }
 
 static void hisi_sas_task_prep_abort(struct hisi_hba *hisi_hba,
-		struct hisi_sas_slot *slot,
-		int device_id, int abort_flag, int tag_to_abort)
+		struct hisi_sas_internal_abort *abort,
+		struct hisi_sas_slot *slot, int device_id)
 {
 	hisi_hba->hw->prep_abort(hisi_hba, slot,
-			device_id, abort_flag, tag_to_abort);
+			device_id, abort->flag, abort->tag);
 }
 
 static void hisi_sas_dma_unmap(struct hisi_hba *hisi_hba,
 			       struct sas_task *task, int n_elem,
-			       int n_elem_req, int n_elem_resp)
+			       int n_elem_req)
 {
 	struct device *dev = hisi_hba->dev;
 
@@ -315,16 +288,13 @@ static void hisi_sas_dma_unmap(struct hisi_hba *hisi_hba,
 			if (n_elem_req)
 				dma_unmap_sg(dev, &task->smp_task.smp_req,
 					     1, DMA_TO_DEVICE);
-			if (n_elem_resp)
-				dma_unmap_sg(dev, &task->smp_task.smp_resp,
-					     1, DMA_FROM_DEVICE);
 		}
 	}
 }
 
 static int hisi_sas_dma_map(struct hisi_hba *hisi_hba,
 			    struct sas_task *task, int *n_elem,
-			    int *n_elem_req, int *n_elem_resp)
+			    int *n_elem_req)
 {
 	struct device *dev = hisi_hba->dev;
 	int rc;
@@ -332,7 +302,7 @@ static int hisi_sas_dma_map(struct hisi_hba *hisi_hba,
 	if (sas_protocol_ata(task->task_proto)) {
 		*n_elem = task->num_scatter;
 	} else {
-		unsigned int req_len, resp_len;
+		unsigned int req_len;
 
 		if (task->num_scatter) {
 			*n_elem = dma_map_sg(dev, task->scatter,
@@ -353,22 +323,11 @@ static int hisi_sas_dma_map(struct hisi_hba *hisi_hba,
 				rc = -EINVAL;
 				goto err_out_dma_unmap;
 			}
-			*n_elem_resp = dma_map_sg(dev, &task->smp_task.smp_resp,
-						  1, DMA_FROM_DEVICE);
-			if (!*n_elem_resp) {
-				rc = -ENOMEM;
-				goto err_out_dma_unmap;
-			}
-			resp_len = sg_dma_len(&task->smp_task.smp_resp);
-			if (resp_len & 0x3) {
-				rc = -EINVAL;
-				goto err_out_dma_unmap;
-			}
 		}
 	}
 
 	if (*n_elem > HISI_SAS_SGE_PAGE_CNT) {
-		dev_err(dev, "task prep: n_elem(%d) > HISI_SAS_SGE_PAGE_CNT",
+		dev_err(dev, "task prep: n_elem(%d) > HISI_SAS_SGE_PAGE_CNT\n",
 			*n_elem);
 		rc = -EINVAL;
 		goto err_out_dma_unmap;
@@ -378,7 +337,7 @@ static int hisi_sas_dma_map(struct hisi_hba *hisi_hba,
 err_out_dma_unmap:
 	/* It would be better to call dma_unmap_sg() here, but it's messy */
 	hisi_sas_dma_unmap(hisi_hba, task, *n_elem,
-			   *n_elem_req, *n_elem_resp);
+			   *n_elem_req);
 prep_out:
 	return rc;
 }
@@ -436,122 +395,43 @@ err_out_dif_dma_unmap:
 	return rc;
 }
 
-static int hisi_sas_task_prep(struct sas_task *task,
-			      struct hisi_sas_dq **dq_pointer,
-			      bool is_tmf, struct hisi_sas_tmf_task *tmf,
-			      int *pass)
+static
+void hisi_sas_task_deliver(struct hisi_hba *hisi_hba,
+			   struct hisi_sas_slot *slot,
+			   struct hisi_sas_dq *dq,
+			   struct hisi_sas_device *sas_dev,
+			   struct hisi_sas_internal_abort *abort)
 {
-	struct domain_device *device = task->dev;
-	struct hisi_hba *hisi_hba = dev_to_hisi_hba(device);
-	struct hisi_sas_device *sas_dev = device->lldd_dev;
-	struct hisi_sas_port *port;
-	struct hisi_sas_slot *slot;
-	struct hisi_sas_cmd_hdr	*cmd_hdr_base;
-	struct asd_sas_port *sas_port = device->port;
-	struct device *dev = hisi_hba->dev;
-	int dlvry_queue_slot, dlvry_queue, rc, slot_idx;
-	int n_elem = 0, n_elem_dif = 0, n_elem_req = 0, n_elem_resp = 0;
-	struct hisi_sas_dq *dq;
+	struct hisi_sas_cmd_hdr *cmd_hdr_base;
+	int dlvry_queue_slot, dlvry_queue;
+	struct sas_task *task = slot->task;
 	unsigned long flags;
 	int wr_q_index;
 
-	if (DEV_IS_GONE(sas_dev)) {
-		if (sas_dev)
-			dev_info(dev, "task prep: device %d not ready\n",
-				 sas_dev->device_id);
-		else
-			dev_info(dev, "task prep: device %016llx not ready\n",
-				 SAS_ADDR(device->sas_addr));
-
-		return -ECOMM;
-	}
-
-	if (hisi_hba->reply_map) {
-		int cpu = raw_smp_processor_id();
-		unsigned int dq_index = hisi_hba->reply_map[cpu];
-
-		*dq_pointer = dq = &hisi_hba->dq[dq_index];
-	} else {
-		*dq_pointer = dq = sas_dev->dq;
-	}
-
-	port = to_hisi_sas_port(sas_port);
-	if (port && !port->port_attached) {
-		dev_info(dev, "task prep: %s port%d not attach device\n",
-			 (dev_is_sata(device)) ?
-			 "SATA/STP" : "SAS",
-			 device->port->id);
-
-		return -ECOMM;
-	}
-
-	rc = hisi_sas_dma_map(hisi_hba, task, &n_elem,
-			      &n_elem_req, &n_elem_resp);
-	if (rc < 0)
-		goto prep_out;
-
-	if (!sas_protocol_ata(task->task_proto)) {
-		rc = hisi_sas_dif_dma_map(hisi_hba, &n_elem_dif, task);
-		if (rc < 0)
-			goto err_out_dma_unmap;
-	}
-
-	if (hisi_hba->hw->slot_index_alloc)
-		rc = hisi_hba->hw->slot_index_alloc(hisi_hba, device);
-	else {
-		struct scsi_cmnd *scsi_cmnd = NULL;
-
-		if (task->uldd_task) {
-			struct ata_queued_cmd *qc;
-
-			if (dev_is_sata(device)) {
-				qc = task->uldd_task;
-				scsi_cmnd = qc->scsicmd;
-			} else {
-				scsi_cmnd = task->uldd_task;
-			}
-		}
-		rc  = hisi_sas_slot_index_alloc(hisi_hba, scsi_cmnd);
-	}
-	if (rc < 0)
-		goto err_out_dif_dma_unmap;
-
-	slot_idx = rc;
-	slot = &hisi_hba->slot_info[slot_idx];
-
-	spin_lock_irqsave(&dq->lock, flags);
-	wr_q_index = hisi_hba->hw->get_free_slot(hisi_hba, dq);
-	if (wr_q_index < 0) {
-		spin_unlock_irqrestore(&dq->lock, flags);
-		rc = -EAGAIN;
-		goto err_out_tag;
-	}
-
+	spin_lock(&dq->lock);
+	wr_q_index = dq->wr_point;
+	dq->wr_point = (dq->wr_point + 1) % HISI_SAS_QUEUE_SLOTS;
 	list_add_tail(&slot->delivery, &dq->list);
-	spin_unlock_irqrestore(&dq->lock, flags);
-	spin_lock_irqsave(&sas_dev->lock, flags);
+	spin_unlock(&dq->lock);
+	spin_lock(&sas_dev->lock);
 	list_add_tail(&slot->entry, &sas_dev->list);
-	spin_unlock_irqrestore(&sas_dev->lock, flags);
+	spin_unlock(&sas_dev->lock);
 
 	dlvry_queue = dq->id;
 	dlvry_queue_slot = wr_q_index;
 
 	slot->device_id = sas_dev->device_id;
-	slot->n_elem = n_elem;
-	slot->n_elem_dif = n_elem_dif;
 	slot->dlvry_queue = dlvry_queue;
 	slot->dlvry_queue_slot = dlvry_queue_slot;
 	cmd_hdr_base = hisi_hba->cmd_hdr[dlvry_queue];
 	slot->cmd_hdr = &cmd_hdr_base[dlvry_queue_slot];
-	slot->task = task;
-	slot->port = port;
-	slot->tmf = tmf;
-	slot->is_internal = is_tmf;
+
 	task->lldd_task = slot;
 
 	memset(slot->cmd_hdr, 0, sizeof(struct hisi_sas_cmd_hdr));
 	memset(hisi_sas_cmd_hdr_addr_mem(slot), 0, HISI_SAS_COMMAND_TABLE_SZ);
-	memset(hisi_sas_status_buf_addr_mem(slot), 0, HISI_SAS_STATUS_BUF_SZ);
+	memset(hisi_sas_status_buf_addr_mem(slot), 0,
+	       sizeof(struct hisi_sas_err_record));
 
 	switch (task->task_proto) {
 	case SAS_PROTOCOL_SMP:
@@ -565,8 +445,14 @@ static int hisi_sas_task_prep(struct sas_task *task,
 	case SAS_PROTOCOL_SATA | SAS_PROTOCOL_STP:
 		hisi_sas_task_prep_ata(hisi_hba, slot);
 		break;
+	case SAS_PROTOCOL_NONE:
+		if (abort) {
+			hisi_sas_task_prep_abort(hisi_hba, abort, slot, sas_dev->device_id);
+			break;
+		}
+	fallthrough;
 	default:
-		dev_err(dev, "task prep: unknown/unsupported proto (0x%x)\n",
+		dev_err(hisi_hba->dev, "task prep: unknown/unsupported proto (0x%x)\n",
 			task->task_proto);
 		break;
 	}
@@ -575,35 +461,27 @@ static int hisi_sas_task_prep(struct sas_task *task,
 	task->task_state_flags |= SAS_TASK_AT_INITIATOR;
 	spin_unlock_irqrestore(&task->task_state_lock, flags);
 
-	++(*pass);
 	WRITE_ONCE(slot->ready, 1);
 
-	return 0;
-
-err_out_tag:
-	hisi_sas_slot_index_free(hisi_hba, slot_idx);
-err_out_dif_dma_unmap:
-	if (!sas_protocol_ata(task->task_proto))
-		hisi_sas_dif_dma_unmap(hisi_hba, task, n_elem_dif);
-err_out_dma_unmap:
-	hisi_sas_dma_unmap(hisi_hba, task, n_elem,
-			   n_elem_req, n_elem_resp);
-prep_out:
-	dev_err(dev, "task prep: failed[%d]!\n", rc);
-	return rc;
+	spin_lock(&dq->lock);
+	hisi_hba->hw->start_delivery(dq);
+	spin_unlock(&dq->lock);
 }
 
 static int hisi_sas_task_exec(struct sas_task *task, gfp_t gfp_flags,
-			      bool is_tmf, struct hisi_sas_tmf_task *tmf)
+			      struct hisi_sas_tmf_task *tmf)
 {
-	u32 rc;
-	u32 pass = 0;
-	unsigned long flags;
-	struct hisi_hba *hisi_hba;
-	struct device *dev;
+	int n_elem = 0, n_elem_dif = 0, n_elem_req = 0;
 	struct domain_device *device = task->dev;
 	struct asd_sas_port *sas_port = device->port;
+	struct hisi_sas_device *sas_dev = device->lldd_dev;
+	struct scsi_cmnd *scmd = NULL;
 	struct hisi_sas_dq *dq = NULL;
+	struct hisi_sas_port *port;
+	struct hisi_hba *hisi_hba;
+	struct hisi_sas_slot *slot;
+	struct device *dev;
+	int rc;
 
 	if (!sas_port) {
 		struct task_status_struct *ts = &task->task_status;
@@ -623,38 +501,114 @@ static int hisi_sas_task_exec(struct sas_task *task, gfp_t gfp_flags,
 	dev = hisi_hba->dev;
 
 	if (unlikely(test_bit(HISI_SAS_REJECT_CMD_BIT, &hisi_hba->flags))) {
-		if (in_softirq())
+		if (!gfpflags_allow_blocking(gfp_flags))
 			return -EINVAL;
 
 		down(&hisi_hba->sem);
 		up(&hisi_hba->sem);
 	}
 
-	/* protect task_prep and start_delivery sequence */
-	rc = hisi_sas_task_prep(task, &dq, is_tmf, tmf, &pass);
-	if (rc)
-		dev_err(dev, "task exec: failed[%d]!\n", rc);
+	if (DEV_IS_GONE(sas_dev)) {
+		if (sas_dev)
+			dev_info(dev, "task prep: device %d not ready\n",
+				 sas_dev->device_id);
+		else
+			dev_info(dev, "task prep: device %016llx not ready\n",
+				 SAS_ADDR(device->sas_addr));
 
-	if (likely(pass)) {
-		spin_lock_irqsave(&dq->lock, flags);
-		hisi_hba->hw->start_delivery(dq);
-		spin_unlock_irqrestore(&dq->lock, flags);
+		return -ECOMM;
 	}
 
+	if (task->uldd_task) {
+		struct ata_queued_cmd *qc;
+
+		if (dev_is_sata(device)) {
+			qc = task->uldd_task;
+			scmd = qc->scsicmd;
+		} else {
+			scmd = task->uldd_task;
+		}
+	}
+
+	if (scmd) {
+		unsigned int dq_index;
+		u32 blk_tag;
+
+		blk_tag = blk_mq_unique_tag(scsi_cmd_to_rq(scmd));
+		dq_index = blk_mq_unique_tag_to_hwq(blk_tag);
+		dq = &hisi_hba->dq[dq_index];
+	} else {
+		struct Scsi_Host *shost = hisi_hba->shost;
+		struct blk_mq_queue_map *qmap = &shost->tag_set.map[HCTX_TYPE_DEFAULT];
+		int queue = qmap->mq_map[raw_smp_processor_id()];
+
+		dq = &hisi_hba->dq[queue];
+	}
+
+	port = to_hisi_sas_port(sas_port);
+	if (port && !port->port_attached) {
+		dev_info(dev, "task prep: %s port%d not attach device\n",
+			 (dev_is_sata(device)) ?
+			 "SATA/STP" : "SAS",
+			 device->port->id);
+
+		return -ECOMM;
+	}
+
+	rc = hisi_sas_dma_map(hisi_hba, task, &n_elem,
+			      &n_elem_req);
+	if (rc < 0)
+		goto prep_out;
+
+	if (!sas_protocol_ata(task->task_proto)) {
+		rc = hisi_sas_dif_dma_map(hisi_hba, &n_elem_dif, task);
+		if (rc < 0)
+			goto err_out_dma_unmap;
+	}
+
+	if (hisi_hba->hw->slot_index_alloc)
+		rc = hisi_hba->hw->slot_index_alloc(hisi_hba, device);
+	else
+		rc = hisi_sas_slot_index_alloc(hisi_hba, scmd);
+
+	if (rc < 0)
+		goto err_out_dif_dma_unmap;
+
+	slot = &hisi_hba->slot_info[rc];
+	slot->n_elem = n_elem;
+	slot->n_elem_dif = n_elem_dif;
+	slot->task = task;
+	slot->port = port;
+
+	slot->tmf = tmf;
+	slot->is_internal = tmf;
+
+	/* protect task_prep and start_delivery sequence */
+	hisi_sas_task_deliver(hisi_hba, slot, dq, sas_dev, NULL);
+
+	return 0;
+
+err_out_dif_dma_unmap:
+	if (!sas_protocol_ata(task->task_proto))
+		hisi_sas_dif_dma_unmap(hisi_hba, task, n_elem_dif);
+err_out_dma_unmap:
+	hisi_sas_dma_unmap(hisi_hba, task, n_elem,
+				   n_elem_req);
+prep_out:
+	dev_err(dev, "task exec: failed[%d]!\n", rc);
 	return rc;
 }
 
-static void hisi_sas_bytes_dmaed(struct hisi_hba *hisi_hba, int phy_no)
+static void hisi_sas_bytes_dmaed(struct hisi_hba *hisi_hba, int phy_no,
+				 gfp_t gfp_flags)
 {
 	struct hisi_sas_phy *phy = &hisi_hba->phy[phy_no];
 	struct asd_sas_phy *sas_phy = &phy->sas_phy;
-	struct sas_ha_struct *sas_ha;
 
 	if (!phy->phy_attached)
 		return;
 
-	sas_ha = &hisi_hba->sha;
-	sas_ha->notify_phy_event(sas_phy, PHYE_OOB_DONE);
+	sas_notify_phy_event(sas_phy, PHYE_OOB_DONE, gfp_flags);
 
 	if (sas_phy->phy) {
 		struct sas_phy *sphy = sas_phy->phy;
@@ -682,19 +636,18 @@ static void hisi_sas_bytes_dmaed(struct hisi_hba *hisi_hba, int phy_no)
 	}
 
 	sas_phy->frame_rcvd_size = phy->frame_rcvd_size;
-	sas_ha->notify_port_event(sas_phy, PORTE_BYTES_DMAED);
+	sas_notify_port_event(sas_phy, PORTE_BYTES_DMAED, gfp_flags);
 }
 
 static struct hisi_sas_device *hisi_sas_alloc_dev(struct domain_device *device)
 {
 	struct hisi_hba *hisi_hba = dev_to_hisi_hba(device);
 	struct hisi_sas_device *sas_dev = NULL;
-	unsigned long flags;
 	int last = hisi_hba->last_dev_id;
 	int first = (hisi_hba->last_dev_id + 1) % HISI_SAS_MAX_DEVICES;
 	int i;
 
-	spin_lock_irqsave(&hisi_hba->lock, flags);
+	spin_lock(&hisi_hba->lock);
 	for (i = first; i != last; i %= HISI_SAS_MAX_DEVICES) {
 		if (hisi_hba->devices[i].dev_type == SAS_PHY_UNUSED) {
 			int queue = i % hisi_hba->queue_count;
@@ -714,18 +667,18 @@ static struct hisi_sas_device *hisi_sas_alloc_dev(struct domain_device *device)
 		i++;
 	}
 	hisi_hba->last_dev_id = i;
-	spin_unlock_irqrestore(&hisi_hba->lock, flags);
+	spin_unlock(&hisi_hba->lock);
 
 	return sas_dev;
 }
 
-#define HISI_SAS_SRST_ATA_DISK_CNT 3
+#define HISI_SAS_DISK_RECOVER_CNT 3
 static int hisi_sas_init_device(struct domain_device *device)
 {
 	int rc = TMF_RESP_FUNC_COMPLETE;
 	struct scsi_lun lun;
 	struct hisi_sas_tmf_task tmf_task;
-	int retry = HISI_SAS_SRST_ATA_DISK_CNT;
+	int retry = HISI_SAS_DISK_RECOVER_CNT;
 	struct hisi_hba *hisi_hba = dev_to_hisi_hba(device);
 	struct device *dev = hisi_hba->dev;
 	struct sas_phy *local_phy;
@@ -735,10 +688,14 @@ static int hisi_sas_init_device(struct domain_device *device)
 		int_to_scsilun(0, &lun);
 
 		tmf_task.tmf = TMF_CLEAR_TASK_SET;
-		rc = hisi_sas_debug_issue_ssp_tmf(device, lun.scsi_lun,
-						  &tmf_task);
-		if (rc == TMF_RESP_FUNC_COMPLETE)
-			hisi_sas_release_task(hisi_hba, device);
+		while (retry-- > 0) {
+			rc = hisi_sas_debug_issue_ssp_tmf(device, lun.scsi_lun,
+							  &tmf_task);
+			if (rc == TMF_RESP_FUNC_COMPLETE) {
+				hisi_sas_release_task(hisi_hba, device);
+				break;
+			}
+		}
 		break;
 	case SAS_SATA_DEV:
 	case SAS_SATA_PM:
@@ -750,7 +707,7 @@ static int hisi_sas_init_device(struct domain_device *device)
 		 */
 		local_phy = sas_get_local_phy(device);
 		if (!scsi_is_sas_phy_local(local_phy) &&
-		    !test_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags)) {
+		    !test_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags)) {
 			unsigned long deadline = ata_deadline(jiffies, 20000);
 			struct sata_device *sata_dev = &device->sata_dev;
 			struct ata_host *ata_host = sata_dev->ata_host;
@@ -781,6 +738,20 @@ static int hisi_sas_init_device(struct domain_device *device)
 
 	return rc;
 }
+
+int hisi_sas_slave_alloc(struct scsi_device *sdev)
+{
+	struct domain_device *ddev;
+	int rc;
+
+	rc = sas_slave_alloc(sdev);
+	if (rc)
+		return rc;
+	ddev = sdev_to_domain_dev(sdev);
+
+	return hisi_sas_init_device(ddev);
+}
+EXPORT_SYMBOL_GPL(hisi_sas_slave_alloc);
 
 static int hisi_sas_dev_found(struct domain_device *device)
 {
@@ -828,9 +799,6 @@ static int hisi_sas_dev_found(struct domain_device *device)
 	dev_info(dev, "dev[%d:%x] found\n",
 		sas_dev->device_id, sas_dev->dev_type);
 
-	rc = hisi_sas_init_device(device);
-	if (rc)
-		goto err_out;
 	sas_dev->dev_status = HISI_SAS_DEV_NORMAL;
 	return 0;
 
@@ -875,17 +843,24 @@ int hisi_sas_scan_finished(struct Scsi_Host *shost, unsigned long time)
 }
 EXPORT_SYMBOL_GPL(hisi_sas_scan_finished);
 
-static void hisi_sas_phyup_work(struct work_struct *work)
+static void hisi_sas_phyup_work_common(struct work_struct *work,
+		enum hisi_sas_phy_event event)
 {
 	struct hisi_sas_phy *phy =
-		container_of(work, typeof(*phy), works[HISI_PHYE_PHY_UP]);
+		container_of(work, typeof(*phy), works[event]);
 	struct hisi_hba *hisi_hba = phy->hisi_hba;
 	struct asd_sas_phy *sas_phy = &phy->sas_phy;
 	int phy_no = sas_phy->id;
 
+	phy->wait_phyup_cnt = 0;
 	if (phy->identify.target_port_protocols == SAS_PROTOCOL_SSP)
 		hisi_hba->hw->sl_notify_ssp(hisi_hba, phy_no);
-	hisi_sas_bytes_dmaed(hisi_hba, phy_no);
+	hisi_sas_bytes_dmaed(hisi_hba, phy_no, GFP_KERNEL);
+}
+
+static void hisi_sas_phyup_work(struct work_struct *work)
+{
+	hisi_sas_phyup_work_common(work, HISI_PHYE_PHY_UP);
 }
 
 static void hisi_sas_linkreset_work(struct work_struct *work)
@@ -897,9 +872,21 @@ static void hisi_sas_linkreset_work(struct work_struct *work)
 	hisi_sas_control_phy(sas_phy, PHY_FUNC_LINK_RESET, NULL);
 }
 
+static void hisi_sas_phyup_pm_work(struct work_struct *work)
+{
+	struct hisi_sas_phy *phy =
+		container_of(work, typeof(*phy), works[HISI_PHYE_PHY_UP_PM]);
+	struct hisi_hba *hisi_hba = phy->hisi_hba;
+	struct device *dev = hisi_hba->dev;
+
+	hisi_sas_phyup_work_common(work, HISI_PHYE_PHY_UP_PM);
+	pm_runtime_put_sync(dev);
+}
+
 static const work_func_t hisi_sas_phye_fns[HISI_PHYES_NUM] = {
 	[HISI_PHYE_PHY_UP] = hisi_sas_phyup_work,
 	[HISI_PHYE_LINK_RESET] = hisi_sas_linkreset_work,
+	[HISI_PHYE_PHY_UP_PM] = hisi_sas_phyup_pm_work,
 };
 
 bool hisi_sas_notify_phy_event(struct hisi_sas_phy *phy,
@@ -925,17 +912,38 @@ static void hisi_sas_wait_phyup_timedout(struct timer_list *t)
 	hisi_sas_notify_phy_event(phy, HISI_PHYE_LINK_RESET);
 }
 
+#define HISI_SAS_WAIT_PHYUP_RETRIES	10
+
 void hisi_sas_phy_oob_ready(struct hisi_hba *hisi_hba, int phy_no)
 {
 	struct hisi_sas_phy *phy = &hisi_hba->phy[phy_no];
 	struct device *dev = hisi_hba->dev;
+	unsigned long flags;
+
+	dev_dbg(dev, "phy%d OOB ready\n", phy_no);
+	spin_lock_irqsave(&phy->lock, flags);
+	if (phy->phy_attached) {
+		spin_unlock_irqrestore(&phy->lock, flags);
+		return;
+	}
 
 	if (!timer_pending(&phy->timer)) {
-		dev_dbg(dev, "phy%d OOB ready\n", phy_no);
-		phy->timer.expires = jiffies + HISI_SAS_WAIT_PHYUP_TIMEOUT * HZ;
-		add_timer(&phy->timer);
+		if (phy->wait_phyup_cnt < HISI_SAS_WAIT_PHYUP_RETRIES) {
+			phy->wait_phyup_cnt++;
+			phy->timer.expires = jiffies +
+					     HISI_SAS_WAIT_PHYUP_TIMEOUT;
+			add_timer(&phy->timer);
+			spin_unlock_irqrestore(&phy->lock, flags);
+			return;
+		}
+
+		dev_warn(dev, "phy%d failed to come up %d times, giving up\n",
+			 phy_no, phy->wait_phyup_cnt);
+		phy->wait_phyup_cnt = 0;
 	}
+	spin_unlock_irqrestore(&phy->lock, flags);
 }
+
 EXPORT_SYMBOL_GPL(hisi_sas_phy_oob_ready);
 
 static void hisi_sas_phy_init(struct hisi_hba *hisi_hba, int phy_no)
@@ -1000,12 +1008,13 @@ static void hisi_sas_port_notify_formed(struct asd_sas_phy *sas_phy)
 	struct hisi_hba *hisi_hba = sas_ha->lldd_ha;
 	struct hisi_sas_phy *phy = sas_phy->lldd_phy;
 	struct asd_sas_port *sas_port = sas_phy->port;
-	struct hisi_sas_port *port = to_hisi_sas_port(sas_port);
+	struct hisi_sas_port *port;
 	unsigned long flags;
 
 	if (!sas_port)
 		return;
 
+	port = to_hisi_sas_port(sas_port);
 	spin_lock_irqsave(&hisi_hba->lock, flags);
 	port->port_attached = 1;
 	port->id = phy->port_id;
@@ -1077,30 +1086,35 @@ static void hisi_sas_dev_gone(struct domain_device *device)
 	struct hisi_sas_device *sas_dev = device->lldd_dev;
 	struct hisi_hba *hisi_hba = dev_to_hisi_hba(device);
 	struct device *dev = hisi_hba->dev;
+	int ret = 0;
 
 	dev_info(dev, "dev[%d:%x] is gone\n",
 		 sas_dev->device_id, sas_dev->dev_type);
 
-	if (!test_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags)) {
+	down(&hisi_hba->sem);
+	if (!test_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags)) {
 		hisi_sas_internal_task_abort(hisi_hba, device,
-					     HISI_SAS_INT_ABT_DEV, 0);
+					     HISI_SAS_INT_ABT_DEV, 0, true);
 
 		hisi_sas_dereg_device(hisi_hba, device);
 
-		down(&hisi_hba->sem);
-		hisi_hba->hw->clear_itct(hisi_hba, sas_dev);
-		up(&hisi_hba->sem);
+		ret = hisi_hba->hw->clear_itct(hisi_hba, sas_dev);
 		device->lldd_dev = NULL;
 	}
 
 	if (hisi_hba->hw->free_device)
 		hisi_hba->hw->free_device(sas_dev);
-	sas_dev->dev_type = SAS_PHY_UNUSED;
+
+	/* Don't mark it as SAS_PHY_UNUSED if failed to clear ITCT */
+	if (!ret)
+		sas_dev->dev_type = SAS_PHY_UNUSED;
+	sas_dev->sas_device = NULL;
+	up(&hisi_hba->sem);
 }
 
 static int hisi_sas_queue_command(struct sas_task *task, gfp_t gfp_flags)
 {
-	return hisi_sas_task_exec(task, gfp_flags, 0, NULL);
+	return hisi_sas_task_exec(task, gfp_flags, NULL);
 }
 
 static int hisi_sas_phy_set_linkrate(struct hisi_hba *hisi_hba, int phy_no,
@@ -1141,9 +1155,18 @@ static int hisi_sas_phy_set_linkrate(struct hisi_hba *hisi_hba, int phy_no,
 static int hisi_sas_control_phy(struct asd_sas_phy *sas_phy, enum phy_func func,
 				void *funcdata)
 {
+	struct hisi_sas_phy *phy = container_of(sas_phy,
+			struct hisi_sas_phy, sas_phy);
 	struct sas_ha_struct *sas_ha = sas_phy->ha;
 	struct hisi_hba *hisi_hba = sas_ha->lldd_ha;
+	struct device *dev = hisi_hba->dev;
+	DECLARE_COMPLETION_ONSTACK(completion);
 	int phy_no = sas_phy->id;
+	u8 sts = phy->phy_attached;
+	int ret = 0;
+
+	down(&hisi_hba->sem);
+	phy->reset_completion = &completion;
 
 	switch (func) {
 	case PHY_FUNC_HARD_RESET:
@@ -1158,26 +1181,41 @@ static int hisi_sas_control_phy(struct asd_sas_phy *sas_phy, enum phy_func func,
 
 	case PHY_FUNC_DISABLE:
 		hisi_sas_phy_enable(hisi_hba, phy_no, 0);
-		break;
+		goto out;
 
 	case PHY_FUNC_SET_LINK_RATE:
-		return hisi_sas_phy_set_linkrate(hisi_hba, phy_no, funcdata);
+		ret = hisi_sas_phy_set_linkrate(hisi_hba, phy_no, funcdata);
+		break;
+
 	case PHY_FUNC_GET_EVENTS:
 		if (hisi_hba->hw->get_events) {
 			hisi_hba->hw->get_events(hisi_hba, phy_no);
-			break;
+			goto out;
 		}
-		/* fallthru */
+		fallthrough;
 	case PHY_FUNC_RELEASE_SPINUP_HOLD:
 	default:
-		return -EOPNOTSUPP;
+		ret = -EOPNOTSUPP;
+		goto out;
 	}
-	return 0;
+
+	if (sts && !wait_for_completion_timeout(&completion, 2 * HZ)) {
+		dev_warn(dev, "phy%d wait phyup timed out for func %d\n",
+			 phy_no, func);
+		if (phy->in_reset)
+			ret = -ETIMEDOUT;
+	}
+
+out:
+	phy->reset_completion = NULL;
+
+	up(&hisi_hba->sem);
+	return ret;
 }
 
 static void hisi_sas_task_done(struct sas_task *task)
 {
-	del_timer(&task->slow_task->timer);
+	del_timer_sync(&task->slow_task->timer);
 	complete(&task->slow_task->completion);
 }
 
@@ -1199,9 +1237,9 @@ static void hisi_sas_tmf_timedout(struct timer_list *t)
 		complete(&task->slow_task->completion);
 }
 
-#define TASK_TIMEOUT 20
-#define TASK_RETRY 3
-#define INTERNAL_ABORT_TIMEOUT 6
+#define TASK_TIMEOUT			(20 * HZ)
+#define TASK_RETRY			3
+#define INTERNAL_ABORT_TIMEOUT		(6 * HZ)
 static int hisi_sas_exec_internal_tmf_task(struct domain_device *device,
 					   void *parameter, u32 para_len,
 					   struct hisi_sas_tmf_task *tmf)
@@ -1229,13 +1267,12 @@ static int hisi_sas_exec_internal_tmf_task(struct domain_device *device,
 		task->task_done = hisi_sas_task_done;
 
 		task->slow_task->timer.function = hisi_sas_tmf_timedout;
-		task->slow_task->timer.expires = jiffies + TASK_TIMEOUT * HZ;
+		task->slow_task->timer.expires = jiffies + TASK_TIMEOUT;
 		add_timer(&task->slow_task->timer);
 
-		res = hisi_sas_task_exec(task, GFP_KERNEL, 1, tmf);
-
+		res = hisi_sas_task_exec(task, GFP_KERNEL, tmf);
 		if (res) {
-			del_timer(&task->slow_task->timer);
+			del_timer_sync(&task->slow_task->timer);
 			dev_err(dev, "abort tmf: executing internal task failed: %d\n",
 				res);
 			goto ex_err;
@@ -1253,10 +1290,10 @@ static int hisi_sas_exec_internal_tmf_task(struct domain_device *device,
 					struct hisi_sas_cq *cq =
 					       &hisi_hba->cq[slot->dlvry_queue];
 					/*
-					 * flush tasklet to avoid free'ing task
+					 * sync irq to avoid free'ing task
 					 * before using task in IO completion
 					 */
-					tasklet_kill(&cq->tasklet);
+					synchronize_irq(cq->irq_no);
 					slot->task = NULL;
 				}
 
@@ -1340,12 +1377,13 @@ static int hisi_sas_softreset_ata_disk(struct domain_device *device)
 	struct hisi_hba *hisi_hba = dev_to_hisi_hba(device);
 	struct device *dev = hisi_hba->dev;
 	int s = sizeof(struct host_to_dev_fis);
+	struct hisi_sas_tmf_task tmf = {};
 
 	ata_for_each_link(link, ap, EDGE) {
 		int pmp = sata_srst_pmp(link);
 
 		hisi_sas_fill_ata_reset_cmd(link->device, 1, pmp, fis);
-		rc = hisi_sas_exec_internal_tmf_task(device, fis, s, NULL);
+		rc = hisi_sas_exec_internal_tmf_task(device, fis, s, &tmf);
 		if (rc != TMF_RESP_FUNC_COMPLETE)
 			break;
 	}
@@ -1356,12 +1394,14 @@ static int hisi_sas_softreset_ata_disk(struct domain_device *device)
 
 			hisi_sas_fill_ata_reset_cmd(link->device, 0, pmp, fis);
 			rc = hisi_sas_exec_internal_tmf_task(device, fis,
-							     s, NULL);
+							     s, &tmf);
 			if (rc != TMF_RESP_FUNC_COMPLETE)
-				dev_err(dev, "ata disk de-reset failed\n");
+				dev_err(dev, "ata disk %016llx de-reset failed\n",
+					SAS_ADDR(device->sas_addr));
 		}
 	} else {
-		dev_err(dev, "ata disk reset failed\n");
+		dev_err(dev, "ata disk %016llx reset failed\n",
+			SAS_ADDR(device->sas_addr));
 	}
 
 	if (rc == TMF_RESP_FUNC_COMPLETE)
@@ -1404,11 +1444,13 @@ static void hisi_sas_refresh_port_id(struct hisi_hba *hisi_hba)
 		sas_port = device->port;
 		port = to_hisi_sas_port(sas_port);
 
+		spin_lock(&sas_port->phy_list_lock);
 		list_for_each_entry(sas_phy, &sas_port->phy_list, port_phy_el)
 			if (state & BIT(sas_phy->id)) {
 				phy = sas_phy->lldd_phy;
 				break;
 			}
+		spin_unlock(&sas_port->phy_list_lock);
 
 		if (phy) {
 			port->id = phy->port_id;
@@ -1423,10 +1465,8 @@ static void hisi_sas_refresh_port_id(struct hisi_hba *hisi_hba)
 	}
 }
 
-static void hisi_sas_rescan_topology(struct hisi_hba *hisi_hba, u32 old_state,
-			      u32 state)
+static void hisi_sas_rescan_topology(struct hisi_hba *hisi_hba, u32 state)
 {
-	struct sas_ha_struct *sas_ha = &hisi_hba->sha;
 	struct asd_sas_port *_sas_port = NULL;
 	int phy_no;
 
@@ -1434,7 +1474,7 @@ static void hisi_sas_rescan_topology(struct hisi_hba *hisi_hba, u32 old_state,
 		struct hisi_sas_phy *phy = &hisi_hba->phy[phy_no];
 		struct asd_sas_phy *sas_phy = &phy->sas_phy;
 		struct asd_sas_port *sas_port = sas_phy->port;
-		bool do_port_check = !!(_sas_port != sas_port);
+		bool do_port_check = _sas_port != sas_port;
 
 		if (!sas_phy->phy->enabled)
 			continue;
@@ -1447,13 +1487,13 @@ static void hisi_sas_rescan_topology(struct hisi_hba *hisi_hba, u32 old_state,
 				_sas_port = sas_port;
 
 				if (dev_is_expander(dev->dev_type))
-					sas_ha->notify_port_event(sas_phy,
-							PORTE_BROADCAST_RCVD);
+					sas_notify_port_event(sas_phy,
+							PORTE_BROADCAST_RCVD,
+							GFP_KERNEL);
 			}
 		} else {
-			hisi_sas_phy_down(hisi_hba, phy_no, 0);
+			hisi_sas_phy_down(hisi_hba, phy_no, 0, GFP_KERNEL);
 		}
-
 	}
 }
 
@@ -1483,26 +1523,24 @@ static void hisi_sas_send_ata_reset_each_phy(struct hisi_hba *hisi_hba,
 	struct device *dev = hisi_hba->dev;
 	int s = sizeof(struct host_to_dev_fis);
 	int rc = TMF_RESP_FUNC_FAILED;
-	struct asd_sas_phy *sas_phy;
 	struct ata_link *link;
 	u8 fis[20] = {0};
-	u32 state;
+	int i;
 
-	state = hisi_hba->hw->get_phys_state(hisi_hba);
-	list_for_each_entry(sas_phy, &sas_port->phy_list, port_phy_el) {
-		if (!(state & BIT(sas_phy->id)))
+	for (i = 0; i < hisi_hba->n_phy; i++) {
+		if (!(sas_port->phy_mask & BIT(i)))
 			continue;
 
 		ata_for_each_link(link, ap, EDGE) {
 			int pmp = sata_srst_pmp(link);
 
-			tmf_task.phy_id = sas_phy->id;
+			tmf_task.phy_id = i;
 			hisi_sas_fill_ata_reset_cmd(link->device, 1, pmp, fis);
 			rc = hisi_sas_exec_internal_tmf_task(device, fis, s,
 							     &tmf_task);
 			if (rc != TMF_RESP_FUNC_COMPLETE) {
 				dev_err(dev, "phy%d ata reset failed rc=%d\n",
-					sas_phy->id, rc);
+					i, rc);
 				break;
 			}
 		}
@@ -1522,7 +1560,8 @@ static void hisi_sas_terminate_stp_reject(struct hisi_hba *hisi_hba)
 			continue;
 
 		rc = hisi_sas_internal_task_abort(hisi_hba, device,
-						  HISI_SAS_INT_ABT_DEV, 0);
+						  HISI_SAS_INT_ABT_DEV, 0,
+						  false);
 		if (rc < 0)
 			dev_err(dev, "STP reject: abort dev failed %d\n", rc);
 	}
@@ -1553,14 +1592,12 @@ void hisi_sas_controller_reset_prepare(struct hisi_hba *hisi_hba)
 {
 	struct Scsi_Host *shost = hisi_hba->shost;
 
-	down(&hisi_hba->sem);
 	hisi_hba->phy_state = hisi_hba->hw->get_phys_state(hisi_hba);
 
 	scsi_block_requests(shost);
 	hisi_hba->hw->wait_cmds_complete_timeout(hisi_hba, 100, 5000);
 
-	if (timer_pending(&hisi_hba->timer))
-		del_timer_sync(&hisi_hba->timer);
+	del_timer_sync(&hisi_hba->timer);
 
 	set_bit(HISI_SAS_REJECT_CMD_BIT, &hisi_hba->flags);
 }
@@ -1569,40 +1606,46 @@ EXPORT_SYMBOL_GPL(hisi_sas_controller_reset_prepare);
 void hisi_sas_controller_reset_done(struct hisi_hba *hisi_hba)
 {
 	struct Scsi_Host *shost = hisi_hba->shost;
-	u32 state;
 
 	/* Init and wait for PHYs to come up and all libsas event finished. */
 	hisi_hba->hw->phys_init(hisi_hba);
 	msleep(1000);
 	hisi_sas_refresh_port_id(hisi_hba);
 	clear_bit(HISI_SAS_REJECT_CMD_BIT, &hisi_hba->flags);
-	up(&hisi_hba->sem);
 
 	if (hisi_hba->reject_stp_links_msk)
 		hisi_sas_terminate_stp_reject(hisi_hba);
 	hisi_sas_reset_init_all_devices(hisi_hba);
 	scsi_unblock_requests(shost);
-	clear_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags);
+	clear_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags);
+	up(&hisi_hba->sem);
 
-	state = hisi_hba->hw->get_phys_state(hisi_hba);
-	hisi_sas_rescan_topology(hisi_hba, hisi_hba->phy_state, state);
+	hisi_sas_rescan_topology(hisi_hba, hisi_hba->phy_state);
 }
 EXPORT_SYMBOL_GPL(hisi_sas_controller_reset_done);
+
+static int hisi_sas_controller_prereset(struct hisi_hba *hisi_hba)
+{
+	if (!hisi_hba->hw->soft_reset)
+		return -1;
+
+	down(&hisi_hba->sem);
+	if (test_and_set_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags)) {
+		up(&hisi_hba->sem);
+		return -1;
+	}
+
+	if (hisi_sas_debugfs_enable && hisi_hba->debugfs_itct[0].itct)
+		hisi_hba->hw->debugfs_snapshot_regs(hisi_hba);
+
+	return 0;
+}
 
 static int hisi_sas_controller_reset(struct hisi_hba *hisi_hba)
 {
 	struct device *dev = hisi_hba->dev;
 	struct Scsi_Host *shost = hisi_hba->shost;
 	int rc;
-
-	if (hisi_sas_debugfs_enable && hisi_hba->debugfs_itct)
-		queue_work(hisi_hba->wq, &hisi_hba->debugfs_work);
-
-	if (!hisi_hba->hw->soft_reset)
-		return -1;
-
-	if (test_and_set_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags))
-		return -1;
 
 	dev_info(dev, "controller resetting...\n");
 	hisi_sas_controller_reset_prepare(hisi_hba);
@@ -1613,11 +1656,12 @@ static int hisi_sas_controller_reset(struct hisi_hba *hisi_hba)
 		clear_bit(HISI_SAS_REJECT_CMD_BIT, &hisi_hba->flags);
 		up(&hisi_hba->sem);
 		scsi_unblock_requests(shost);
-		clear_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags);
+		clear_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags);
 		return rc;
 	}
 
 	hisi_sas_controller_reset_done(hisi_hba);
+	clear_bit(HISI_SAS_HW_FAULT_BIT, &hisi_hba->flags);
 	dev_info(dev, "controller reset complete\n");
 
 	return 0;
@@ -1647,11 +1691,11 @@ static int hisi_sas_abort_task(struct sas_task *task)
 
 		if (slot) {
 			/*
-			 * flush tasklet to avoid free'ing task
+			 * sync irq to avoid free'ing task
 			 * before using task in IO completion
 			 */
 			cq = &hisi_hba->cq[slot->dlvry_queue];
-			tasklet_kill(&cq->tasklet);
+			synchronize_irq(cq->irq_no);
 		}
 		spin_unlock_irqrestore(&task->task_state_lock, flags);
 		rc = TMF_RESP_FUNC_COMPLETE;
@@ -1674,7 +1718,8 @@ static int hisi_sas_abort_task(struct sas_task *task)
 						  &tmf_task);
 
 		rc2 = hisi_sas_internal_task_abort(hisi_hba, device,
-						   HISI_SAS_INT_ABT_CMD, tag);
+						   HISI_SAS_INT_ABT_CMD, tag,
+						   false);
 		if (rc2 < 0) {
 			dev_err(dev, "abort task: internal abort (%d)\n", rc2);
 			return TMF_RESP_FUNC_FAILED;
@@ -1696,7 +1741,7 @@ static int hisi_sas_abort_task(struct sas_task *task)
 		if (task->dev->dev_type == SAS_SATA_DEV) {
 			rc = hisi_sas_internal_task_abort(hisi_hba, device,
 							  HISI_SAS_INT_ABT_DEV,
-							  0);
+							  0, false);
 			if (rc < 0) {
 				dev_err(dev, "abort task: internal abort failed\n");
 				goto out;
@@ -1711,14 +1756,15 @@ static int hisi_sas_abort_task(struct sas_task *task)
 		struct hisi_sas_cq *cq = &hisi_hba->cq[slot->dlvry_queue];
 
 		rc = hisi_sas_internal_task_abort(hisi_hba, device,
-						  HISI_SAS_INT_ABT_CMD, tag);
+						  HISI_SAS_INT_ABT_CMD, tag,
+						  false);
 		if (((rc < 0) || (rc == TMF_RESP_FUNC_FAILED)) &&
 					task->lldd_task) {
 			/*
-			 * flush tasklet to avoid free'ing task
+			 * sync irq to avoid free'ing task
 			 * before using task in IO completion
 			 */
-			tasklet_kill(&cq->tasklet);
+			synchronize_irq(cq->irq_no);
 			slot->task = NULL;
 		}
 	}
@@ -1737,7 +1783,7 @@ static int hisi_sas_abort_task_set(struct domain_device *device, u8 *lun)
 	int rc;
 
 	rc = hisi_sas_internal_task_abort(hisi_hba, device,
-					  HISI_SAS_INT_ABT_DEV, 0);
+					  HISI_SAS_INT_ABT_DEV, 0, false);
 	if (rc < 0) {
 		dev_err(dev, "abort task set: internal abort rc=%d\n", rc);
 		return TMF_RESP_FUNC_FAILED;
@@ -1764,47 +1810,60 @@ static int hisi_sas_clear_aca(struct domain_device *device, u8 *lun)
 	return rc;
 }
 
+#define I_T_NEXUS_RESET_PHYUP_TIMEOUT  (2 * HZ)
+
 static int hisi_sas_debug_I_T_nexus_reset(struct domain_device *device)
 {
 	struct sas_phy *local_phy = sas_get_local_phy(device);
 	struct hisi_sas_device *sas_dev = device->lldd_dev;
 	struct hisi_hba *hisi_hba = dev_to_hisi_hba(device);
 	struct sas_ha_struct *sas_ha = &hisi_hba->sha;
-	struct asd_sas_phy *sas_phy = sas_ha->sas_phy[local_phy->number];
-	struct hisi_sas_phy *phy = container_of(sas_phy,
-			struct hisi_sas_phy, sas_phy);
-	DECLARE_COMPLETION_ONSTACK(phyreset);
 	int rc, reset_type;
 
+	if (!local_phy->enabled) {
+		sas_put_local_phy(local_phy);
+		return -ENODEV;
+	}
+
 	if (scsi_is_sas_phy_local(local_phy)) {
+		struct asd_sas_phy *sas_phy =
+			sas_ha->sas_phy[local_phy->number];
+		struct hisi_sas_phy *phy =
+			container_of(sas_phy, struct hisi_sas_phy, sas_phy);
+		unsigned long flags;
+
+		spin_lock_irqsave(&phy->lock, flags);
 		phy->in_reset = 1;
-		phy->reset_completion = &phyreset;
+		spin_unlock_irqrestore(&phy->lock, flags);
 	}
 
 	reset_type = (sas_dev->dev_status == HISI_SAS_DEV_INIT ||
-		      !dev_is_sata(device)) ? 1 : 0;
+		      !dev_is_sata(device)) ? true : false;
 
 	rc = sas_phy_reset(local_phy, reset_type);
 	sas_put_local_phy(local_phy);
 
 	if (scsi_is_sas_phy_local(local_phy)) {
-		int ret = wait_for_completion_timeout(&phyreset, 2 * HZ);
+		struct asd_sas_phy *sas_phy =
+			sas_ha->sas_phy[local_phy->number];
+		struct hisi_sas_phy *phy =
+			container_of(sas_phy, struct hisi_sas_phy, sas_phy);
 		unsigned long flags;
 
 		spin_lock_irqsave(&phy->lock, flags);
-		phy->reset_completion = NULL;
 		phy->in_reset = 0;
 		spin_unlock_irqrestore(&phy->lock, flags);
 
 		/* report PHY down if timed out */
-		if (!ret)
-			hisi_sas_phy_down(hisi_hba, sas_phy->id, 0);
+		if (rc == -ETIMEDOUT)
+			hisi_sas_phy_down(hisi_hba, sas_phy->id, 0, GFP_KERNEL);
 	} else if (sas_dev->dev_status != HISI_SAS_DEV_INIT) {
 		/*
 		 * If in init state, we rely on caller to wait for link to be
-		 * ready; otherwise, delay.
+		 * ready; otherwise, except phy reset is fail, delay.
 		 */
-		msleep(2000);
+		if (!rc)
+			msleep(2000);
 	}
 
 	return rc;
@@ -1817,20 +1876,39 @@ static int hisi_sas_I_T_nexus_reset(struct domain_device *device)
 	int rc;
 
 	rc = hisi_sas_internal_task_abort(hisi_hba, device,
-					  HISI_SAS_INT_ABT_DEV, 0);
+					  HISI_SAS_INT_ABT_DEV, 0, false);
 	if (rc < 0) {
 		dev_err(dev, "I_T nexus reset: internal abort (%d)\n", rc);
 		return TMF_RESP_FUNC_FAILED;
 	}
 	hisi_sas_dereg_device(hisi_hba, device);
 
-	if (dev_is_sata(device)) {
-		rc = hisi_sas_softreset_ata_disk(device);
-		if (rc == TMF_RESP_FUNC_FAILED)
-			return TMF_RESP_FUNC_FAILED;
-	}
-
 	rc = hisi_sas_debug_I_T_nexus_reset(device);
+	if (rc == TMF_RESP_FUNC_COMPLETE && dev_is_sata(device)) {
+		struct sas_phy *local_phy;
+
+		rc = hisi_sas_softreset_ata_disk(device);
+		switch (rc) {
+		case -ECOMM:
+			rc = -ENODEV;
+			break;
+		case TMF_RESP_FUNC_FAILED:
+		case -EMSGSIZE:
+		case -EIO:
+			local_phy = sas_get_local_phy(device);
+			rc = sas_phy_enable(local_phy, 0);
+			if (!rc) {
+				local_phy->enabled = 0;
+				dev_err(dev, "Disabled local phy of ATA disk %016llx due to softreset fail (%d)\n",
+					SAS_ADDR(device->sas_addr), rc);
+				rc = -ENODEV;
+			}
+			sas_put_local_phy(local_phy);
+			break;
+		default:
+			break;
+		}
+	}
 
 	if ((rc == TMF_RESP_FUNC_COMPLETE) || (rc == -ENODEV))
 		hisi_sas_release_task(hisi_hba, device);
@@ -1845,35 +1923,27 @@ static int hisi_sas_lu_reset(struct domain_device *device, u8 *lun)
 	struct device *dev = hisi_hba->dev;
 	int rc = TMF_RESP_FUNC_FAILED;
 
+	/* Clear internal IO and then lu reset */
+	rc = hisi_sas_internal_task_abort(hisi_hba, device,
+					  HISI_SAS_INT_ABT_DEV, 0, false);
+	if (rc < 0) {
+		dev_err(dev, "lu_reset: internal abort failed\n");
+		goto out;
+	}
+	hisi_sas_dereg_device(hisi_hba, device);
+
 	if (dev_is_sata(device)) {
 		struct sas_phy *phy;
 
-		/* Clear internal IO and then hardreset */
-		rc = hisi_sas_internal_task_abort(hisi_hba, device,
-						  HISI_SAS_INT_ABT_DEV, 0);
-		if (rc < 0) {
-			dev_err(dev, "lu_reset: internal abort failed\n");
-			goto out;
-		}
-		hisi_sas_dereg_device(hisi_hba, device);
-
 		phy = sas_get_local_phy(device);
 
-		rc = sas_phy_reset(phy, 1);
+		rc = sas_phy_reset(phy, true);
 
 		if (rc == 0)
 			hisi_sas_release_task(hisi_hba, device);
 		sas_put_local_phy(phy);
 	} else {
 		struct hisi_sas_tmf_task tmf_task = { .tmf =  TMF_LU_RESET };
-
-		rc = hisi_sas_internal_task_abort(hisi_hba, device,
-						  HISI_SAS_INT_ABT_DEV, 0);
-		if (rc < 0) {
-			dev_err(dev, "lu_reset: internal abort failed\n");
-			goto out;
-		}
-		hisi_sas_dereg_device(hisi_hba, device);
 
 		rc = hisi_sas_debug_issue_ssp_tmf(device, lun, &tmf_task);
 		if (rc == TMF_RESP_FUNC_COMPLETE)
@@ -1886,12 +1956,24 @@ out:
 	return rc;
 }
 
+static void hisi_sas_async_I_T_nexus_reset(void *data, async_cookie_t cookie)
+{
+	struct domain_device *device = data;
+	struct hisi_hba *hisi_hba = dev_to_hisi_hba(device);
+	int rc;
+
+	rc = hisi_sas_debug_I_T_nexus_reset(device);
+	if (rc != TMF_RESP_FUNC_COMPLETE)
+		dev_info(hisi_hba->dev, "I_T_nexus reset fail for dev:%016llx rc=%d\n",
+			 SAS_ADDR(device->sas_addr), rc);
+}
+
 static int hisi_sas_clear_nexus_ha(struct sas_ha_struct *sas_ha)
 {
 	struct hisi_hba *hisi_hba = sas_ha->lldd_ha;
-	struct device *dev = hisi_hba->dev;
 	HISI_SAS_DECLARE_RST_WORK_ON_STACK(r);
-	int rc, i;
+	ASYNC_DOMAIN_EXCLUSIVE(async);
+	int i;
 
 	queue_work(hisi_hba->wq, &r.work);
 	wait_for_completion(r.completion);
@@ -1906,12 +1988,11 @@ static int hisi_sas_clear_nexus_ha(struct sas_ha_struct *sas_ha)
 		    dev_is_expander(device->dev_type))
 			continue;
 
-		rc = hisi_sas_debug_I_T_nexus_reset(device);
-		if (rc != TMF_RESP_FUNC_COMPLETE)
-			dev_info(dev, "clear nexus ha: for device[%d] rc=%d\n",
-				 sas_dev->device_id, rc);
+		async_schedule_domain(hisi_sas_async_I_T_nexus_reset,
+				      device, &async);
 	}
 
+	async_synchronize_full_domain(&async);
 	hisi_sas_release_tasks(hisi_hba);
 
 	return TMF_RESP_FUNC_COMPLETE;
@@ -1953,19 +2034,17 @@ static int hisi_sas_query_task(struct sas_task *task)
 
 static int
 hisi_sas_internal_abort_task_exec(struct hisi_hba *hisi_hba, int device_id,
-				  struct sas_task *task, int abort_flag,
-				  int task_tag, struct hisi_sas_dq *dq)
+				  struct hisi_sas_internal_abort *abort,
+				  struct sas_task *task,
+				  struct hisi_sas_dq *dq)
 {
 	struct domain_device *device = task->dev;
 	struct hisi_sas_device *sas_dev = device->lldd_dev;
 	struct device *dev = hisi_hba->dev;
 	struct hisi_sas_port *port;
-	struct hisi_sas_slot *slot;
 	struct asd_sas_port *sas_port = device->port;
-	struct hisi_sas_cmd_hdr *cmd_hdr_base;
-	int dlvry_queue_slot, dlvry_queue, n_elem = 0, rc, slot_idx;
-	unsigned long flags, flags_dq = 0;
-	int wr_q_index;
+	struct hisi_sas_slot *slot;
+	int slot_idx;
 
 	if (unlikely(test_bit(HISI_SAS_REJECT_CMD_BIT, &hisi_hba->flags)))
 		return -EINVAL;
@@ -1976,64 +2055,24 @@ hisi_sas_internal_abort_task_exec(struct hisi_hba *hisi_hba, int device_id,
 	port = to_hisi_sas_port(sas_port);
 
 	/* simply get a slot and send abort command */
-	rc = hisi_sas_slot_index_alloc(hisi_hba, NULL);
-	if (rc < 0)
+	slot_idx = hisi_sas_slot_index_alloc(hisi_hba, NULL);
+	if (slot_idx < 0)
 		goto err_out;
 
-	slot_idx = rc;
 	slot = &hisi_hba->slot_info[slot_idx];
-
-	spin_lock_irqsave(&dq->lock, flags_dq);
-	wr_q_index = hisi_hba->hw->get_free_slot(hisi_hba, dq);
-	if (wr_q_index < 0) {
-		spin_unlock_irqrestore(&dq->lock, flags_dq);
-		rc = -EAGAIN;
-		goto err_out_tag;
-	}
-	list_add_tail(&slot->delivery, &dq->list);
-	spin_unlock_irqrestore(&dq->lock, flags_dq);
-	spin_lock_irqsave(&sas_dev->lock, flags);
-	list_add_tail(&slot->entry, &sas_dev->list);
-	spin_unlock_irqrestore(&sas_dev->lock, flags);
-
-	dlvry_queue = dq->id;
-	dlvry_queue_slot = wr_q_index;
-
-	slot->device_id = sas_dev->device_id;
-	slot->n_elem = n_elem;
-	slot->dlvry_queue = dlvry_queue;
-	slot->dlvry_queue_slot = dlvry_queue_slot;
-	cmd_hdr_base = hisi_hba->cmd_hdr[dlvry_queue];
-	slot->cmd_hdr = &cmd_hdr_base[dlvry_queue_slot];
+	slot->n_elem = 0;
 	slot->task = task;
 	slot->port = port;
 	slot->is_internal = true;
-	task->lldd_task = slot;
 
-	memset(slot->cmd_hdr, 0, sizeof(struct hisi_sas_cmd_hdr));
-	memset(hisi_sas_cmd_hdr_addr_mem(slot), 0, HISI_SAS_COMMAND_TABLE_SZ);
-	memset(hisi_sas_status_buf_addr_mem(slot), 0, HISI_SAS_STATUS_BUF_SZ);
-
-	hisi_sas_task_prep_abort(hisi_hba, slot, device_id,
-				      abort_flag, task_tag);
-
-	spin_lock_irqsave(&task->task_state_lock, flags);
-	task->task_state_flags |= SAS_TASK_AT_INITIATOR;
-	spin_unlock_irqrestore(&task->task_state_lock, flags);
-	WRITE_ONCE(slot->ready, 1);
-	/* send abort command to the chip */
-	spin_lock_irqsave(&dq->lock, flags);
-	hisi_hba->hw->start_delivery(dq);
-	spin_unlock_irqrestore(&dq->lock, flags);
+	hisi_sas_task_deliver(hisi_hba, slot, dq, sas_dev, abort);
 
 	return 0;
 
-err_out_tag:
-	hisi_sas_slot_index_free(hisi_hba, slot_idx);
 err_out:
-	dev_err(dev, "internal abort task prep: failed[%d]!\n", rc);
+	dev_err(dev, "internal abort task prep: failed[%d]!\n", slot_idx);
 
-	return rc;
+	return slot_idx;
 }
 
 /**
@@ -2045,17 +2084,22 @@ err_out:
  * @tag: tag of IO to be aborted (only relevant to single
  *       IO mode)
  * @dq: delivery queue for this internal abort command
+ * @rst_to_recover: If rst_to_recover set, queue a controller
+ *		    reset if an internal abort times out.
  */
 static int
 _hisi_sas_internal_task_abort(struct hisi_hba *hisi_hba,
 			      struct domain_device *device, int abort_flag,
-			      int tag, struct hisi_sas_dq *dq)
+			      int tag, struct hisi_sas_dq *dq, bool rst_to_recover)
 {
 	struct sas_task *task;
 	struct hisi_sas_device *sas_dev = device->lldd_dev;
+	struct hisi_sas_internal_abort abort = {
+		.flag = abort_flag,
+		.tag = tag,
+	};
 	struct device *dev = hisi_hba->dev;
 	int res;
-
 	/*
 	 * The interface is not realized means this HW don't support internal
 	 * abort, or don't need to do internal abort. Then here, we return
@@ -2065,21 +2109,24 @@ _hisi_sas_internal_task_abort(struct hisi_hba *hisi_hba,
 	if (!hisi_hba->hw->prep_abort)
 		return TMF_RESP_FUNC_FAILED;
 
+	if (test_bit(HISI_SAS_HW_FAULT_BIT, &hisi_hba->flags))
+		return -EIO;
+
 	task = sas_alloc_slow_task(GFP_KERNEL);
 	if (!task)
 		return -ENOMEM;
 
 	task->dev = device;
-	task->task_proto = device->tproto;
+	task->task_proto = SAS_PROTOCOL_NONE;
 	task->task_done = hisi_sas_task_done;
 	task->slow_task->timer.function = hisi_sas_tmf_timedout;
-	task->slow_task->timer.expires = jiffies + INTERNAL_ABORT_TIMEOUT * HZ;
+	task->slow_task->timer.expires = jiffies + INTERNAL_ABORT_TIMEOUT;
 	add_timer(&task->slow_task->timer);
 
 	res = hisi_sas_internal_abort_task_exec(hisi_hba, sas_dev->device_id,
-						task, abort_flag, tag, dq);
+						&abort, task, dq);
 	if (res) {
-		del_timer(&task->slow_task->timer);
+		del_timer_sync(&task->slow_task->timer);
 		dev_err(dev, "internal task abort: executing internal task failed: %d\n",
 			res);
 		goto exit;
@@ -2089,20 +2136,31 @@ _hisi_sas_internal_task_abort(struct hisi_hba *hisi_hba,
 
 	/* Internal abort timed out */
 	if ((task->task_state_flags & SAS_TASK_STATE_ABORTED)) {
+		if (hisi_sas_debugfs_enable && hisi_hba->debugfs_itct[0].itct)
+			queue_work(hisi_hba->wq, &hisi_hba->debugfs_work);
+
 		if (!(task->task_state_flags & SAS_TASK_STATE_DONE)) {
 			struct hisi_sas_slot *slot = task->lldd_task;
+
+			set_bit(HISI_SAS_HW_FAULT_BIT, &hisi_hba->flags);
 
 			if (slot) {
 				struct hisi_sas_cq *cq =
 					&hisi_hba->cq[slot->dlvry_queue];
 				/*
-				 * flush tasklet to avoid free'ing task
+				 * sync irq to avoid free'ing task
 				 * before using task in IO completion
 				 */
-				tasklet_kill(&cq->tasklet);
+				synchronize_irq(cq->irq_no);
 				slot->task = NULL;
 			}
-			dev_err(dev, "internal task abort: timeout and not done.\n");
+
+			if (rst_to_recover) {
+				dev_err(dev, "internal task abort: timeout and not done. Queuing reset.\n");
+				queue_work(hisi_hba->wq, &hisi_hba->rst_work);
+			} else {
+				dev_err(dev, "internal task abort: timeout and not done.\n");
+			}
 
 			res = -EIO;
 			goto exit;
@@ -2123,7 +2181,7 @@ _hisi_sas_internal_task_abort(struct hisi_hba *hisi_hba,
 	}
 
 exit:
-	dev_dbg(dev, "internal task abort: task to dev %016llx task=%p resp: 0x%x sts 0x%x\n",
+	dev_dbg(dev, "internal task abort: task to dev %016llx task=%pK resp: 0x%x sts 0x%x\n",
 		SAS_ADDR(device->sas_addr), task,
 		task->task_status.resp, /* 0 is complete, -1 is undelivered */
 		task->task_status.stat);
@@ -2135,7 +2193,7 @@ exit:
 static int
 hisi_sas_internal_task_abort(struct hisi_hba *hisi_hba,
 			     struct domain_device *device,
-			     int abort_flag, int tag)
+			     int abort_flag, int tag, bool rst_to_recover)
 {
 	struct hisi_sas_slot *slot;
 	struct device *dev = hisi_hba->dev;
@@ -2147,18 +2205,19 @@ hisi_sas_internal_task_abort(struct hisi_hba *hisi_hba,
 		slot = &hisi_hba->slot_info[tag];
 		dq = &hisi_hba->dq[slot->dlvry_queue];
 		return _hisi_sas_internal_task_abort(hisi_hba, device,
-						     abort_flag, tag, dq);
+						     abort_flag, tag, dq,
+						     rst_to_recover);
 	case HISI_SAS_INT_ABT_DEV:
 		for (i = 0; i < hisi_hba->cq_nvecs; i++) {
 			struct hisi_sas_cq *cq = &hisi_hba->cq[i];
-			const struct cpumask *mask = cq->pci_irq_mask;
+			const struct cpumask *mask = cq->irq_mask;
 
 			if (mask && !cpumask_intersects(cpu_online_mask, mask))
 				continue;
 			dq = &hisi_hba->dq[i];
 			rc = _hisi_sas_internal_task_abort(hisi_hba, device,
 							   abort_flag, tag,
-							   dq);
+							   dq, rst_to_recover);
 			if (rc)
 				return rc;
 		}
@@ -2207,27 +2266,27 @@ static void hisi_sas_phy_disconnected(struct hisi_sas_phy *phy)
 	spin_unlock_irqrestore(&phy->lock, flags);
 }
 
-void hisi_sas_phy_down(struct hisi_hba *hisi_hba, int phy_no, int rdy)
+void hisi_sas_phy_down(struct hisi_hba *hisi_hba, int phy_no, int rdy,
+		       gfp_t gfp_flags)
 {
 	struct hisi_sas_phy *phy = &hisi_hba->phy[phy_no];
 	struct asd_sas_phy *sas_phy = &phy->sas_phy;
-	struct sas_ha_struct *sas_ha = &hisi_hba->sha;
 	struct device *dev = hisi_hba->dev;
 
 	if (rdy) {
 		/* Phy down but ready */
-		hisi_sas_bytes_dmaed(hisi_hba, phy_no);
+		hisi_sas_bytes_dmaed(hisi_hba, phy_no, gfp_flags);
 		hisi_sas_port_notify_formed(sas_phy);
 	} else {
 		struct hisi_sas_port *port  = phy->port;
 
-		if (test_bit(HISI_SAS_RESET_BIT, &hisi_hba->flags) ||
+		if (test_bit(HISI_SAS_RESETTING_BIT, &hisi_hba->flags) ||
 		    phy->in_reset) {
 			dev_info(dev, "ignore flutter phy%d down\n", phy_no);
 			return;
 		}
 		/* Phy down and not ready */
-		sas_ha->notify_phy_event(sas_phy, PHYE_LOSS_OF_SIGNAL);
+		sas_notify_phy_event(sas_phy, PHYE_LOSS_OF_SIGNAL, gfp_flags);
 		sas_phy_disconnected(sas_phy);
 
 		if (port) {
@@ -2245,17 +2304,17 @@ void hisi_sas_phy_down(struct hisi_hba *hisi_hba, int phy_no, int rdy)
 }
 EXPORT_SYMBOL_GPL(hisi_sas_phy_down);
 
-void hisi_sas_kill_tasklets(struct hisi_hba *hisi_hba)
+void hisi_sas_sync_irqs(struct hisi_hba *hisi_hba)
 {
 	int i;
 
 	for (i = 0; i < hisi_hba->cq_nvecs; i++) {
 		struct hisi_sas_cq *cq = &hisi_hba->cq[i];
 
-		tasklet_kill(&cq->tasklet);
+		synchronize_irq(cq->irq_no);
 	}
 }
-EXPORT_SYMBOL_GPL(hisi_sas_kill_tasklets);
+EXPORT_SYMBOL_GPL(hisi_sas_sync_irqs);
 
 int hisi_sas_host_reset(struct Scsi_Host *shost, int reset_type)
 {
@@ -2291,7 +2350,7 @@ static struct sas_domain_function_template hisi_sas_transport_ops = {
 
 void hisi_sas_init_mem(struct hisi_hba *hisi_hba)
 {
-	int i, s, j, max_command_entries = hisi_hba->hw->max_command_entries;
+	int i, s, j, max_command_entries = HISI_SAS_MAX_COMMANDS;
 	struct hisi_sas_breakpoint *sata_breakpoint = hisi_hba->sata_breakpoint;
 
 	for (i = 0; i < hisi_hba->queue_count; i++) {
@@ -2328,7 +2387,7 @@ EXPORT_SYMBOL_GPL(hisi_sas_init_mem);
 int hisi_sas_alloc(struct hisi_hba *hisi_hba)
 {
 	struct device *dev = hisi_hba->dev;
-	int i, j, s, max_command_entries = hisi_hba->hw->max_command_entries;
+	int i, j, s, max_command_entries = HISI_SAS_MAX_COMMANDS;
 	int max_command_entries_ru, sz_slot_buf_ru;
 	int blk_cnt, slots_per_blk;
 
@@ -2379,7 +2438,7 @@ int hisi_sas_alloc(struct hisi_hba *hisi_hba)
 
 	s = HISI_SAS_MAX_ITCT_ENTRIES * sizeof(struct hisi_sas_itct);
 	hisi_hba->itct = dmam_alloc_coherent(dev, s, &hisi_hba->itct_dma,
-					     GFP_KERNEL | __GFP_ZERO);
+					     GFP_KERNEL);
 	if (!hisi_hba->itct)
 		goto err_out;
 
@@ -2396,7 +2455,7 @@ int hisi_sas_alloc(struct hisi_hba *hisi_hba)
 	else
 		sz_slot_buf_ru = sizeof(struct hisi_sas_slot_buf_table);
 	sz_slot_buf_ru = roundup(sz_slot_buf_ru, 64);
-	s = lcm(max_command_entries_ru, sz_slot_buf_ru);
+	s = max(lcm(max_command_entries_ru, sz_slot_buf_ru), PAGE_SIZE);
 	blk_cnt = (max_command_entries_ru * sz_slot_buf_ru) / s;
 	slots_per_blk = s / sz_slot_buf_ru;
 
@@ -2406,7 +2465,7 @@ int hisi_sas_alloc(struct hisi_hba *hisi_hba)
 		void *buf;
 
 		buf = dmam_alloc_coherent(dev, s, &buf_dma,
-					  GFP_KERNEL | __GFP_ZERO);
+					  GFP_KERNEL);
 		if (!buf)
 			goto err_out;
 
@@ -2436,9 +2495,8 @@ int hisi_sas_alloc(struct hisi_hba *hisi_hba)
 	if (!hisi_hba->breakpoint)
 		goto err_out;
 
-	hisi_hba->slot_index_count = max_command_entries;
-	s = hisi_hba->slot_index_count / BITS_PER_BYTE;
-	hisi_hba->slot_index_tags = devm_kzalloc(dev, s, GFP_KERNEL);
+	s = hisi_hba->slot_index_count = max_command_entries;
+	hisi_hba->slot_index_tags = devm_bitmap_zalloc(dev, s, GFP_KERNEL);
 	if (!hisi_hba->slot_index_tags)
 		goto err_out;
 
@@ -2455,11 +2513,8 @@ int hisi_sas_alloc(struct hisi_hba *hisi_hba)
 					GFP_KERNEL);
 	if (!hisi_hba->sata_breakpoint)
 		goto err_out;
-	hisi_sas_init_mem(hisi_hba);
 
-	hisi_sas_slot_index_init(hisi_hba);
-	hisi_hba->last_slot_index = hisi_hba->hw->max_command_entries -
-		HISI_SAS_RESERVED_IPTT_CNT;
+	hisi_hba->last_slot_index = HISI_SAS_UNRESERVED_IPTT;
 
 	hisi_hba->wq = create_singlethread_workqueue(dev_name(dev));
 	if (!hisi_hba->wq) {
@@ -2493,6 +2548,9 @@ void hisi_sas_rst_work_handler(struct work_struct *work)
 	struct hisi_hba *hisi_hba =
 		container_of(work, struct hisi_hba, rst_work);
 
+	if (hisi_sas_controller_prereset(hisi_hba))
+		return;
+
 	hisi_sas_controller_reset(hisi_hba);
 }
 EXPORT_SYMBOL_GPL(hisi_sas_rst_work_handler);
@@ -2502,8 +2560,12 @@ void hisi_sas_sync_rst_work_handler(struct work_struct *work)
 	struct hisi_sas_rst *rst =
 		container_of(work, struct hisi_sas_rst, work);
 
+	if (hisi_sas_controller_prereset(rst->hisi_hba))
+		goto rst_complete;
+
 	if (!hisi_sas_controller_reset(rst->hisi_hba))
 		rst->done = true;
+rst_complete:
 	complete(rst->completion);
 }
 EXPORT_SYMBOL_GPL(hisi_sas_sync_rst_work_handler);
@@ -2602,16 +2664,12 @@ static struct Scsi_Host *hisi_sas_shost_alloc(struct platform_device *pdev,
 		goto err_out;
 
 	error = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
-	if (error)
-		error = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
-
 	if (error) {
 		dev_err(dev, "No usable DMA addressing method\n");
 		goto err_out;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	hisi_hba->regs = devm_ioremap_resource(dev, res);
+	hisi_hba->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(hisi_hba->regs))
 		goto err_out;
 
@@ -2632,6 +2690,13 @@ err_out:
 	scsi_host_put(shost);
 	dev_err(dev, "shost alloc failed\n");
 	return NULL;
+}
+
+static int hisi_sas_interrupt_preinit(struct hisi_hba *hisi_hba)
+{
+	if (hisi_hba->hw->interrupt_preinit)
+		return hisi_hba->hw->interrupt_preinit(hisi_hba);
+	return 0;
 }
 
 int hisi_sas_probe(struct platform_device *pdev,
@@ -2672,13 +2737,11 @@ int hisi_sas_probe(struct platform_device *pdev,
 	shost->max_channel = 1;
 	shost->max_cmd_len = 16;
 	if (hisi_hba->hw->slot_index_alloc) {
-		shost->can_queue = hisi_hba->hw->max_command_entries;
-		shost->cmd_per_lun = hisi_hba->hw->max_command_entries;
+		shost->can_queue = HISI_SAS_MAX_COMMANDS;
+		shost->cmd_per_lun = HISI_SAS_MAX_COMMANDS;
 	} else {
-		shost->can_queue = hisi_hba->hw->max_command_entries -
-			HISI_SAS_RESERVED_IPTT_CNT;
-		shost->cmd_per_lun = hisi_hba->hw->max_command_entries -
-			HISI_SAS_RESERVED_IPTT_CNT;
+		shost->can_queue = HISI_SAS_UNRESERVED_IPTT;
+		shost->cmd_per_lun = HISI_SAS_UNRESERVED_IPTT;
 	}
 
 	sha->sas_ha_name = DRV_NAME;
@@ -2693,6 +2756,10 @@ int hisi_sas_probe(struct platform_device *pdev,
 		sha->sas_port[i] = &hisi_hba->port[i].sas_port;
 	}
 
+	rc = hisi_sas_interrupt_preinit(hisi_hba);
+	if (rc)
+		goto err_out_ha;
+
 	rc = scsi_add_host(shost, &pdev->dev);
 	if (rc)
 		goto err_out_ha;
@@ -2703,12 +2770,14 @@ int hisi_sas_probe(struct platform_device *pdev,
 
 	rc = hisi_hba->hw->hw_init(hisi_hba);
 	if (rc)
-		goto err_out_register_ha;
+		goto err_out_hw_init;
 
 	scsi_scan_host(shost);
 
 	return 0;
 
+err_out_hw_init:
+	sas_unregister_ha(sha);
 err_out_register_ha:
 	scsi_remove_host(shost);
 err_out_ha:
@@ -2718,563 +2787,13 @@ err_out_ha:
 }
 EXPORT_SYMBOL_GPL(hisi_sas_probe);
 
-struct dentry *hisi_sas_debugfs_dir;
-
-static void hisi_sas_debugfs_snapshot_cq_reg(struct hisi_hba *hisi_hba)
-{
-	int queue_entry_size = hisi_hba->hw->complete_hdr_size;
-	int i;
-
-	for (i = 0; i < hisi_hba->queue_count; i++)
-		memcpy(hisi_hba->debugfs_complete_hdr[i],
-		       hisi_hba->complete_hdr[i],
-		       HISI_SAS_QUEUE_SLOTS * queue_entry_size);
-}
-
-static void hisi_sas_debugfs_snapshot_dq_reg(struct hisi_hba *hisi_hba)
-{
-	int queue_entry_size = sizeof(struct hisi_sas_cmd_hdr);
-	int i;
-
-	for (i = 0; i < hisi_hba->queue_count; i++) {
-		struct hisi_sas_cmd_hdr	*debugfs_cmd_hdr, *cmd_hdr;
-		int j;
-
-		debugfs_cmd_hdr = hisi_hba->debugfs_cmd_hdr[i];
-		cmd_hdr = hisi_hba->cmd_hdr[i];
-
-		for (j = 0; j < HISI_SAS_QUEUE_SLOTS; j++)
-			memcpy(&debugfs_cmd_hdr[j], &cmd_hdr[j],
-			       queue_entry_size);
-	}
-}
-
-static void hisi_sas_debugfs_snapshot_port_reg(struct hisi_hba *hisi_hba)
-{
-	const struct hisi_sas_debugfs_reg *port =
-		hisi_hba->hw->debugfs_reg_port;
-	int i, phy_cnt;
-	u32 offset;
-	u32 *databuf;
-
-	for (phy_cnt = 0; phy_cnt < hisi_hba->n_phy; phy_cnt++) {
-		databuf = (u32 *)hisi_hba->debugfs_port_reg[phy_cnt];
-		for (i = 0; i < port->count; i++, databuf++) {
-			offset = port->base_off + 4 * i;
-			*databuf = port->read_port_reg(hisi_hba, phy_cnt,
-						       offset);
-		}
-	}
-}
-
-static void hisi_sas_debugfs_snapshot_global_reg(struct hisi_hba *hisi_hba)
-{
-	u32 *databuf = (u32 *)hisi_hba->debugfs_global_reg;
-	const struct hisi_sas_debugfs_reg *global =
-		hisi_hba->hw->debugfs_reg_global;
-	int i;
-
-	for (i = 0; i < global->count; i++, databuf++)
-		*databuf = global->read_global_reg(hisi_hba, 4 * i);
-}
-
-static void hisi_sas_debugfs_snapshot_itct_reg(struct hisi_hba *hisi_hba)
-{
-	void *databuf = hisi_hba->debugfs_itct;
-	struct hisi_sas_itct *itct;
-	int i;
-
-	itct = hisi_hba->itct;
-
-	for (i = 0; i < HISI_SAS_MAX_ITCT_ENTRIES; i++, itct++) {
-		memcpy(databuf, itct, sizeof(struct hisi_sas_itct));
-		databuf += sizeof(struct hisi_sas_itct);
-	}
-}
-
-static void hisi_sas_debugfs_snapshot_iost_reg(struct hisi_hba *hisi_hba)
-{
-	int max_command_entries = hisi_hba->hw->max_command_entries;
-	void *databuf = hisi_hba->debugfs_iost;
-	struct hisi_sas_iost *iost;
-	int i;
-
-	iost = hisi_hba->iost;
-
-	for (i = 0; i < max_command_entries; i++, iost++) {
-		memcpy(databuf, iost, sizeof(struct hisi_sas_iost));
-		databuf += sizeof(struct hisi_sas_iost);
-	}
-}
-
-static const char *
-hisi_sas_debugfs_to_reg_name(int off, int base_off,
-			     const struct hisi_sas_debugfs_reg_lu *lu)
-{
-	for (; lu->name; lu++) {
-		if (off == lu->off - base_off)
-			return lu->name;
-	}
-
-	return NULL;
-}
-
-static void hisi_sas_debugfs_print_reg(u32 *regs_val, const void *ptr,
-				       struct seq_file *s)
-{
-	const struct hisi_sas_debugfs_reg *reg = ptr;
-	int i;
-
-	for (i = 0; i < reg->count; i++) {
-		int off = i * 4;
-		const char *name;
-
-		name = hisi_sas_debugfs_to_reg_name(off, reg->base_off,
-						    reg->lu);
-
-		if (name)
-			seq_printf(s, "0x%08x 0x%08x %s\n", off,
-				   regs_val[i], name);
-		else
-			seq_printf(s, "0x%08x 0x%08x\n", off,
-				   regs_val[i]);
-	}
-}
-
-static int hisi_sas_debugfs_global_show(struct seq_file *s, void *p)
-{
-	struct hisi_hba *hisi_hba = s->private;
-	const struct hisi_sas_hw *hw = hisi_hba->hw;
-	const struct hisi_sas_debugfs_reg *reg_global = hw->debugfs_reg_global;
-
-	hisi_sas_debugfs_print_reg(hisi_hba->debugfs_global_reg,
-				   reg_global, s);
-
-	return 0;
-}
-
-static int hisi_sas_debugfs_global_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, hisi_sas_debugfs_global_show,
-			   inode->i_private);
-}
-
-static const struct file_operations hisi_sas_debugfs_global_fops = {
-	.open = hisi_sas_debugfs_global_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	.owner = THIS_MODULE,
-};
-
-static int hisi_sas_debugfs_port_show(struct seq_file *s, void *p)
-{
-	struct hisi_sas_phy *phy = s->private;
-	struct hisi_hba *hisi_hba = phy->hisi_hba;
-	const struct hisi_sas_hw *hw = hisi_hba->hw;
-	const struct hisi_sas_debugfs_reg *reg_port = hw->debugfs_reg_port;
-	u32 *databuf = hisi_hba->debugfs_port_reg[phy->sas_phy.id];
-
-	hisi_sas_debugfs_print_reg(databuf, reg_port, s);
-
-	return 0;
-}
-
-static int hisi_sas_debugfs_port_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, hisi_sas_debugfs_port_show, inode->i_private);
-}
-
-static const struct file_operations hisi_sas_debugfs_port_fops = {
-	.open = hisi_sas_debugfs_port_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	.owner = THIS_MODULE,
-};
-
-static int hisi_sas_show_row_64(struct seq_file *s, int index,
-				int sz, __le64 *ptr)
-{
-	int i;
-
-	/* completion header size not fixed per HW version */
-	seq_printf(s, "index %04d:\n\t", index);
-	for (i = 1; i <= sz / 8; i++, ptr++) {
-		seq_printf(s, " 0x%016llx", le64_to_cpu(*ptr));
-		if (!(i % 2))
-			seq_puts(s, "\n\t");
-	}
-
-	seq_puts(s, "\n");
-
-	return 0;
-}
-
-static int hisi_sas_show_row_32(struct seq_file *s, int index,
-				int sz, __le32 *ptr)
-{
-	int i;
-
-	/* completion header size not fixed per HW version */
-	seq_printf(s, "index %04d:\n\t", index);
-	for (i = 1; i <= sz / 4; i++, ptr++) {
-		seq_printf(s, " 0x%08x", le32_to_cpu(*ptr));
-		if (!(i % 4))
-			seq_puts(s, "\n\t");
-	}
-	seq_puts(s, "\n");
-
-	return 0;
-}
-
-static int hisi_sas_cq_show_slot(struct seq_file *s, int slot, void *cq_ptr)
-{
-	struct hisi_sas_cq *cq = cq_ptr;
-	struct hisi_hba *hisi_hba = cq->hisi_hba;
-	void *complete_queue = hisi_hba->debugfs_complete_hdr[cq->id];
-	__le32 *complete_hdr = complete_queue +
-			(hisi_hba->hw->complete_hdr_size * slot);
-
-	return hisi_sas_show_row_32(s, slot,
-				hisi_hba->hw->complete_hdr_size,
-				complete_hdr);
-}
-
-static int hisi_sas_debugfs_cq_show(struct seq_file *s, void *p)
-{
-	struct hisi_sas_cq *cq = s->private;
-	int slot, ret;
-
-	for (slot = 0; slot < HISI_SAS_QUEUE_SLOTS; slot++) {
-		ret = hisi_sas_cq_show_slot(s, slot, cq);
-		if (ret)
-			return ret;
-	}
-	return 0;
-}
-
-static int hisi_sas_debugfs_cq_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, hisi_sas_debugfs_cq_show, inode->i_private);
-}
-
-static const struct file_operations hisi_sas_debugfs_cq_fops = {
-	.open = hisi_sas_debugfs_cq_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	.owner = THIS_MODULE,
-};
-
-static int hisi_sas_dq_show_slot(struct seq_file *s, int slot, void *dq_ptr)
-{
-	struct hisi_sas_dq *dq = dq_ptr;
-	struct hisi_hba *hisi_hba = dq->hisi_hba;
-	void *cmd_queue = hisi_hba->debugfs_cmd_hdr[dq->id];
-	__le32 *cmd_hdr = cmd_queue +
-		sizeof(struct hisi_sas_cmd_hdr) * slot;
-
-	return hisi_sas_show_row_32(s, slot, sizeof(struct hisi_sas_cmd_hdr),
-				    cmd_hdr);
-}
-
-static int hisi_sas_debugfs_dq_show(struct seq_file *s, void *p)
-{
-	int slot, ret;
-
-	for (slot = 0; slot < HISI_SAS_QUEUE_SLOTS; slot++) {
-		ret = hisi_sas_dq_show_slot(s, slot, s->private);
-		if (ret)
-			return ret;
-	}
-	return 0;
-}
-
-static int hisi_sas_debugfs_dq_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, hisi_sas_debugfs_dq_show, inode->i_private);
-}
-
-static const struct file_operations hisi_sas_debugfs_dq_fops = {
-	.open = hisi_sas_debugfs_dq_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	.owner = THIS_MODULE,
-};
-
-static int hisi_sas_debugfs_iost_show(struct seq_file *s, void *p)
-{
-	struct hisi_hba *hisi_hba = s->private;
-	struct hisi_sas_iost *debugfs_iost = hisi_hba->debugfs_iost;
-	int i, ret, max_command_entries = hisi_hba->hw->max_command_entries;
-	__le64 *iost = &debugfs_iost->qw0;
-
-	for (i = 0; i < max_command_entries; i++, debugfs_iost++) {
-		ret = hisi_sas_show_row_64(s, i, sizeof(*debugfs_iost),
-					   iost);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
-}
-
-static int hisi_sas_debugfs_iost_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, hisi_sas_debugfs_iost_show, inode->i_private);
-}
-
-static const struct file_operations hisi_sas_debugfs_iost_fops = {
-	.open = hisi_sas_debugfs_iost_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	.owner = THIS_MODULE,
-};
-
-static int hisi_sas_debugfs_itct_show(struct seq_file *s, void *p)
-{
-	int i, ret;
-	struct hisi_hba *hisi_hba = s->private;
-	struct hisi_sas_itct *debugfs_itct = hisi_hba->debugfs_itct;
-	__le64 *itct = &debugfs_itct->qw0;
-
-	for (i = 0; i < HISI_SAS_MAX_ITCT_ENTRIES; i++, debugfs_itct++) {
-		ret = hisi_sas_show_row_64(s, i, sizeof(*debugfs_itct),
-					   itct);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
-}
-
-static int hisi_sas_debugfs_itct_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, hisi_sas_debugfs_itct_show, inode->i_private);
-}
-
-static const struct file_operations hisi_sas_debugfs_itct_fops = {
-	.open = hisi_sas_debugfs_itct_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	.owner = THIS_MODULE,
-};
-
-static void hisi_sas_debugfs_create_files(struct hisi_hba *hisi_hba)
-{
-	struct dentry *dump_dentry;
-	struct dentry *dentry;
-	char name[256];
-	int p;
-	int c;
-	int d;
-
-	/* Create dump dir inside device dir */
-	dump_dentry = debugfs_create_dir("dump", hisi_hba->debugfs_dir);
-	hisi_hba->debugfs_dump_dentry = dump_dentry;
-
-	debugfs_create_file("global", 0400, dump_dentry, hisi_hba,
-			    &hisi_sas_debugfs_global_fops);
-
-	/* Create port dir and files */
-	dentry = debugfs_create_dir("port", dump_dentry);
-	for (p = 0; p < hisi_hba->n_phy; p++) {
-		snprintf(name, 256, "%d", p);
-
-		debugfs_create_file(name, 0400, dentry, &hisi_hba->phy[p],
-				    &hisi_sas_debugfs_port_fops);
-	}
-
-	/* Create CQ dir and files */
-	dentry = debugfs_create_dir("cq", dump_dentry);
-	for (c = 0; c < hisi_hba->queue_count; c++) {
-		snprintf(name, 256, "%d", c);
-
-		debugfs_create_file(name, 0400, dentry, &hisi_hba->cq[c],
-				    &hisi_sas_debugfs_cq_fops);
-	}
-
-	/* Create DQ dir and files */
-	dentry = debugfs_create_dir("dq", dump_dentry);
-	for (d = 0; d < hisi_hba->queue_count; d++) {
-		snprintf(name, 256, "%d", d);
-
-		debugfs_create_file(name, 0400, dentry, &hisi_hba->dq[d],
-				    &hisi_sas_debugfs_dq_fops);
-	}
-
-	debugfs_create_file("iost", 0400, dump_dentry, hisi_hba,
-			    &hisi_sas_debugfs_iost_fops);
-
-	debugfs_create_file("itct", 0400, dump_dentry, hisi_hba,
-			    &hisi_sas_debugfs_itct_fops);
-
-	return;
-}
-
-static void hisi_sas_debugfs_snapshot_regs(struct hisi_hba *hisi_hba)
-{
-	hisi_hba->hw->snapshot_prepare(hisi_hba);
-
-	hisi_sas_debugfs_snapshot_global_reg(hisi_hba);
-	hisi_sas_debugfs_snapshot_port_reg(hisi_hba);
-	hisi_sas_debugfs_snapshot_cq_reg(hisi_hba);
-	hisi_sas_debugfs_snapshot_dq_reg(hisi_hba);
-	hisi_sas_debugfs_snapshot_itct_reg(hisi_hba);
-	hisi_sas_debugfs_snapshot_iost_reg(hisi_hba);
-
-	hisi_sas_debugfs_create_files(hisi_hba);
-
-	hisi_hba->hw->snapshot_restore(hisi_hba);
-}
-
-static ssize_t hisi_sas_debugfs_trigger_dump_write(struct file *file,
-						   const char __user *user_buf,
-						   size_t count, loff_t *ppos)
-{
-	struct hisi_hba *hisi_hba = file->f_inode->i_private;
-	char buf[8];
-
-	/* A bit racy, but don't care too much since it's only debugfs */
-	if (hisi_hba->debugfs_snapshot)
-		return -EFAULT;
-
-	if (count > 8)
-		return -EFAULT;
-
-	if (copy_from_user(buf, user_buf, count))
-		return -EFAULT;
-
-	if (buf[0] != '1')
-		return -EFAULT;
-
-	queue_work(hisi_hba->wq, &hisi_hba->debugfs_work);
-
-	return count;
-}
-
-static const struct file_operations hisi_sas_debugfs_trigger_dump_fops = {
-	.write = &hisi_sas_debugfs_trigger_dump_write,
-	.owner = THIS_MODULE,
-};
-
-void hisi_sas_debugfs_work_handler(struct work_struct *work)
-{
-	struct hisi_hba *hisi_hba =
-		container_of(work, struct hisi_hba, debugfs_work);
-
-	if (hisi_hba->debugfs_snapshot)
-		return;
-	hisi_hba->debugfs_snapshot = true;
-
-	hisi_sas_debugfs_snapshot_regs(hisi_hba);
-}
-EXPORT_SYMBOL_GPL(hisi_sas_debugfs_work_handler);
-
-void hisi_sas_debugfs_init(struct hisi_hba *hisi_hba)
-{
-	int max_command_entries = hisi_hba->hw->max_command_entries;
-	struct device *dev = hisi_hba->dev;
-	int p, i, c, d;
-	size_t sz;
-
-	hisi_hba->debugfs_dir = debugfs_create_dir(dev_name(dev),
-						   hisi_sas_debugfs_dir);
-	debugfs_create_file("trigger_dump", 0600,
-			    hisi_hba->debugfs_dir,
-			    hisi_hba,
-			    &hisi_sas_debugfs_trigger_dump_fops);
-
-	/* Alloc buffer for global */
-	sz = hisi_hba->hw->debugfs_reg_global->count * 4;
-	hisi_hba->debugfs_global_reg =
-		devm_kmalloc(dev, sz, GFP_KERNEL);
-
-	if (!hisi_hba->debugfs_global_reg)
-		goto fail_global;
-
-	/* Alloc buffer for port */
-	sz = hisi_hba->hw->debugfs_reg_port->count * 4;
-	for (p = 0; p < hisi_hba->n_phy; p++) {
-		hisi_hba->debugfs_port_reg[p] =
-			devm_kmalloc(dev, sz, GFP_KERNEL);
-
-		if (!hisi_hba->debugfs_port_reg[p])
-			goto fail_port;
-	}
-
-	/* Alloc buffer for cq */
-	sz = hisi_hba->hw->complete_hdr_size * HISI_SAS_QUEUE_SLOTS;
-	for (c = 0; c < hisi_hba->queue_count; c++) {
-		hisi_hba->debugfs_complete_hdr[c] =
-			devm_kmalloc(dev, sz, GFP_KERNEL);
-
-		if (!hisi_hba->debugfs_complete_hdr[c])
-			goto fail_cq;
-	}
-
-	/* Alloc buffer for dq */
-	sz = sizeof(struct hisi_sas_cmd_hdr) * HISI_SAS_QUEUE_SLOTS;
-	for (d = 0; d < hisi_hba->queue_count; d++) {
-		hisi_hba->debugfs_cmd_hdr[d] =
-			devm_kmalloc(dev, sz, GFP_KERNEL);
-
-		if (!hisi_hba->debugfs_cmd_hdr[d])
-			goto fail_iost_dq;
-	}
-
-	/* Alloc buffer for iost */
-	sz = max_command_entries * sizeof(struct hisi_sas_iost);
-
-	hisi_hba->debugfs_iost = devm_kmalloc(dev, sz, GFP_KERNEL);
-	if (!hisi_hba->debugfs_iost)
-		goto fail_iost_dq;
-
-	/* Alloc buffer for itct */
-	/* New memory allocation must be locate before itct */
-	sz = HISI_SAS_MAX_ITCT_ENTRIES * sizeof(struct hisi_sas_itct);
-
-	hisi_hba->debugfs_itct = devm_kmalloc(dev, sz, GFP_KERNEL);
-	if (!hisi_hba->debugfs_itct)
-		goto fail_itct;
-
-	return;
-fail_itct:
-	devm_kfree(dev, hisi_hba->debugfs_iost);
-fail_iost_dq:
-	for (i = 0; i < d; i++)
-		devm_kfree(dev, hisi_hba->debugfs_cmd_hdr[i]);
-fail_cq:
-	for (i = 0; i < c; i++)
-		devm_kfree(dev, hisi_hba->debugfs_complete_hdr[i]);
-fail_port:
-	for (i = 0; i < p; i++)
-		devm_kfree(dev, hisi_hba->debugfs_port_reg[i]);
-	devm_kfree(dev, hisi_hba->debugfs_global_reg);
-fail_global:
-	debugfs_remove_recursive(hisi_hba->debugfs_dir);
-	dev_dbg(dev, "failed to init debugfs!\n");
-}
-EXPORT_SYMBOL_GPL(hisi_sas_debugfs_init);
-
-void hisi_sas_debugfs_exit(struct hisi_hba *hisi_hba)
-{
-	debugfs_remove_recursive(hisi_hba->debugfs_dir);
-}
-EXPORT_SYMBOL_GPL(hisi_sas_debugfs_exit);
-
 int hisi_sas_remove(struct platform_device *pdev)
 {
 	struct sas_ha_struct *sha = platform_get_drvdata(pdev);
 	struct hisi_hba *hisi_hba = sha->lldd_ha;
 	struct Scsi_Host *shost = sha->core.shost;
 
-	if (timer_pending(&hisi_hba->timer))
-		del_timer(&hisi_hba->timer);
+	del_timer_sync(&hisi_hba->timer);
 
 	sas_unregister_ha(sha);
 	sas_remove_host(sha->core.shost);
@@ -3285,10 +2804,27 @@ int hisi_sas_remove(struct platform_device *pdev)
 }
 EXPORT_SYMBOL_GPL(hisi_sas_remove);
 
+#if IS_ENABLED(CONFIG_SCSI_HISI_SAS_DEBUGFS_DEFAULT_ENABLE)
+#define DEBUGFS_ENABLE_DEFAULT  "enabled"
+bool hisi_sas_debugfs_enable = true;
+u32 hisi_sas_debugfs_dump_count = 50;
+#else
+#define DEBUGFS_ENABLE_DEFAULT "disabled"
 bool hisi_sas_debugfs_enable;
+u32 hisi_sas_debugfs_dump_count = 1;
+#endif
+
 EXPORT_SYMBOL_GPL(hisi_sas_debugfs_enable);
 module_param_named(debugfs_enable, hisi_sas_debugfs_enable, bool, 0444);
-MODULE_PARM_DESC(hisi_sas_debugfs_enable, "Enable driver debugfs (default disabled)");
+MODULE_PARM_DESC(hisi_sas_debugfs_enable,
+		 "Enable driver debugfs (default "DEBUGFS_ENABLE_DEFAULT")");
+
+EXPORT_SYMBOL_GPL(hisi_sas_debugfs_dump_count);
+module_param_named(debugfs_dump_count, hisi_sas_debugfs_dump_count, uint, 0444);
+MODULE_PARM_DESC(hisi_sas_debugfs_dump_count, "Number of debugfs dumps to allow");
+
+struct dentry *hisi_sas_debugfs_dir;
+EXPORT_SYMBOL_GPL(hisi_sas_debugfs_dir);
 
 static __init int hisi_sas_init(void)
 {
@@ -3296,8 +2832,13 @@ static __init int hisi_sas_init(void)
 	if (!hisi_sas_stt)
 		return -ENOMEM;
 
-	if (hisi_sas_debugfs_enable)
+	if (hisi_sas_debugfs_enable) {
 		hisi_sas_debugfs_dir = debugfs_create_dir("hisi_sas", NULL);
+		if (hisi_sas_debugfs_dump_count > HISI_SAS_MAX_DEBUGFS_DUMP) {
+			pr_info("hisi_sas: Limiting debugfs dump count\n");
+			hisi_sas_debugfs_dump_count = HISI_SAS_MAX_DEBUGFS_DUMP;
+		}
+	}
 
 	return 0;
 }

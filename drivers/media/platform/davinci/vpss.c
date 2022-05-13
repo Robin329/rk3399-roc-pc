@@ -392,7 +392,6 @@ EXPORT_SYMBOL(dm365_vpss_set_pg_frame_size);
 
 static int vpss_probe(struct platform_device *pdev)
 {
-	struct resource *res;
 	char *platform_name;
 
 	if (!pdev->dev.platform_data) {
@@ -413,17 +412,12 @@ static int vpss_probe(struct platform_device *pdev)
 	}
 
 	dev_info(&pdev->dev, "%s vpss probed\n", platform_name);
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-
-	oper_cfg.vpss_regs_base0 = devm_ioremap_resource(&pdev->dev, res);
+	oper_cfg.vpss_regs_base0 = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(oper_cfg.vpss_regs_base0))
 		return PTR_ERR(oper_cfg.vpss_regs_base0);
 
 	if (oper_cfg.platform == DM355 || oper_cfg.platform == DM365) {
-		res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-
-		oper_cfg.vpss_regs_base1 = devm_ioremap_resource(&pdev->dev,
-								 res);
+		oper_cfg.vpss_regs_base1 = devm_platform_ioremap_resource(pdev, 1);
 		if (IS_ERR(oper_cfg.vpss_regs_base1))
 			return PTR_ERR(oper_cfg.vpss_regs_base1);
 	}
@@ -505,19 +499,31 @@ static void vpss_exit(void)
 
 static int __init vpss_init(void)
 {
+	int ret;
+
 	if (!request_mem_region(VPSS_CLK_CTRL, 4, "vpss_clock_control"))
 		return -EBUSY;
 
 	oper_cfg.vpss_regs_base2 = ioremap(VPSS_CLK_CTRL, 4);
 	if (unlikely(!oper_cfg.vpss_regs_base2)) {
-		release_mem_region(VPSS_CLK_CTRL, 4);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_ioremap;
 	}
 
 	writel(VPSS_CLK_CTRL_VENCCLKEN |
-		     VPSS_CLK_CTRL_DACCLKEN, oper_cfg.vpss_regs_base2);
+	       VPSS_CLK_CTRL_DACCLKEN, oper_cfg.vpss_regs_base2);
 
-	return platform_driver_register(&vpss_driver);
+	ret = platform_driver_register(&vpss_driver);
+	if (ret)
+		goto err_pd_register;
+
+	return 0;
+
+err_pd_register:
+	iounmap(oper_cfg.vpss_regs_base2);
+err_ioremap:
+	release_mem_region(VPSS_CLK_CTRL, 4);
+	return ret;
 }
 subsys_initcall(vpss_init);
 module_exit(vpss_exit);

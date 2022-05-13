@@ -175,7 +175,7 @@ static int stmpe_read_raw(struct iio_dev *indio_dev,
 static irqreturn_t stmpe_adc_isr(int irq, void *dev_id)
 {
 	struct stmpe_adc *info = (struct stmpe_adc *)dev_id;
-	u16 data;
+	__be16 data;
 
 	if (info->channel <= STMPE_ADC_LAST_NR) {
 		int int_sta;
@@ -256,6 +256,7 @@ static int stmpe_adc_probe(struct platform_device *pdev)
 	struct stmpe_adc *info;
 	struct device_node *np;
 	u32 norequest_mask = 0;
+	unsigned long bits;
 	int irq_temp, irq_adc;
 	int num_chan = 0;
 	int i = 0;
@@ -297,7 +298,6 @@ static int stmpe_adc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, indio_dev);
 
 	indio_dev->name		= dev_name(&pdev->dev);
-	indio_dev->dev.parent	= &pdev->dev;
 	indio_dev->info		= &stmpe_adc_iio_info;
 	indio_dev->modes	= INDIO_DIRECT_MODE;
 
@@ -310,8 +310,8 @@ static int stmpe_adc_probe(struct platform_device *pdev)
 
 	of_property_read_u32(np, "st,norequest-mask", &norequest_mask);
 
-	for_each_clear_bit(i, (unsigned long *) &norequest_mask,
-			   (STMPE_ADC_LAST_NR + 1)) {
+	bits = norequest_mask;
+	for_each_clear_bit(i, &bits, (STMPE_ADC_LAST_NR + 1)) {
 		stmpe_adc_voltage_chan(&info->stmpe_adc_iio_channels[num_chan], i);
 		num_chan++;
 	}

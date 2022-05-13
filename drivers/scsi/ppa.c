@@ -665,7 +665,7 @@ static void ppa_interrupt(struct work_struct *work)
 
 	dev->cur_cmd = NULL;
 
-	cmd->scsi_done(cmd);
+	scsi_done(cmd);
 }
 
 static int ppa_engine(ppa_struct *dev, struct scsi_cmnd *cmd)
@@ -717,7 +717,7 @@ static int ppa_engine(ppa_struct *dev, struct scsi_cmnd *cmd)
 			}
 			cmd->SCp.phase++;
 		}
-		/* fall through */
+		fallthrough;
 
 	case 2:		/* Phase 2 - We are now talking to the scsi bus */
 		if (!ppa_select(dev, scmd_id(cmd))) {
@@ -725,7 +725,7 @@ static int ppa_engine(ppa_struct *dev, struct scsi_cmnd *cmd)
 			return 0;
 		}
 		cmd->SCp.phase++;
-		/* fall through */
+		fallthrough;
 
 	case 3:		/* Phase 3 - Ready to accept a command */
 		w_ctr(ppb, 0x0c);
@@ -735,7 +735,7 @@ static int ppa_engine(ppa_struct *dev, struct scsi_cmnd *cmd)
 		if (!ppa_send_command(cmd))
 			return 0;
 		cmd->SCp.phase++;
-		/* fall through */
+		fallthrough;
 
 	case 4:		/* Phase 4 - Setup scatter/gather buffers */
 		if (scsi_bufflen(cmd)) {
@@ -749,7 +749,7 @@ static int ppa_engine(ppa_struct *dev, struct scsi_cmnd *cmd)
 		}
 		cmd->SCp.buffers_residual = scsi_sg_count(cmd) - 1;
 		cmd->SCp.phase++;
-		/* fall through */
+		fallthrough;
 
 	case 5:		/* Phase 5 - Data transfer stage */
 		w_ctr(ppb, 0x0c);
@@ -762,7 +762,7 @@ static int ppa_engine(ppa_struct *dev, struct scsi_cmnd *cmd)
 		if (retv == 0)
 			return 1;
 		cmd->SCp.phase++;
-		/* fall through */
+		fallthrough;
 
 	case 6:		/* Phase 6 - Read status/message */
 		cmd->result = DID_OK << 16;
@@ -779,7 +779,6 @@ static int ppa_engine(ppa_struct *dev, struct scsi_cmnd *cmd)
 			    (DID_OK << 16) + (h << 8) + (l & STATUS_MASK);
 		}
 		return 0;	/* Finished */
-		break;
 
 	default:
 		printk(KERN_ERR "ppa: Invalid scsi phase\n");
@@ -787,8 +786,7 @@ static int ppa_engine(ppa_struct *dev, struct scsi_cmnd *cmd)
 	return 0;
 }
 
-static int ppa_queuecommand_lck(struct scsi_cmnd *cmd,
-		void (*done) (struct scsi_cmnd *))
+static int ppa_queuecommand_lck(struct scsi_cmnd *cmd)
 {
 	ppa_struct *dev = ppa_dev(cmd->device->host);
 
@@ -799,7 +797,6 @@ static int ppa_queuecommand_lck(struct scsi_cmnd *cmd,
 	dev->failed = 0;
 	dev->jstart = jiffies;
 	dev->cur_cmd = cmd;
-	cmd->scsi_done = done;
 	cmd->result = DID_ERROR << 16;	/* default return code */
 	cmd->SCp.phase = 0;	/* bus free */
 
@@ -847,10 +844,8 @@ static int ppa_abort(struct scsi_cmnd *cmd)
 	case 1:		/* Have not connected to interface */
 		dev->cur_cmd = NULL;	/* Forget the problem */
 		return SUCCESS;
-		break;
 	default:		/* SCSI command sent, can not abort */
 		return FAILED;
-		break;
 	}
 }
 
@@ -1151,18 +1146,6 @@ static struct parport_driver ppa_driver = {
 	.detach		= ppa_detach,
 	.devmodel	= true,
 };
+module_parport_driver(ppa_driver);
 
-static int __init ppa_driver_init(void)
-{
-	printk(KERN_INFO "ppa: Version %s\n", PPA_VERSION);
-	return parport_register_driver(&ppa_driver);
-}
-
-static void __exit ppa_driver_exit(void)
-{
-	parport_unregister_driver(&ppa_driver);
-}
-
-module_init(ppa_driver_init);
-module_exit(ppa_driver_exit);
 MODULE_LICENSE("GPL");
