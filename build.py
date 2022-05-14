@@ -14,6 +14,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def help():
+    print("Please input ./build.py [param]:")
+    print("[param]:")
+    print("         [build_kernel]: full compile kernel.")
+    print("         [dtbs]: compile rk3399-roc-pc.dtb.")
+    print("         [Image]: compile Image.")
+    print("         [clean]: make clean.")
+    print("         [modules]: make modules.")
+
 def set_env():
     """Set Build enviroment.
 
@@ -38,20 +47,36 @@ def build_kernel(command_one):
        rk3399-roc-pc
     """
     if "build_kernel" == command_one:
-        os.system("make roc-rk3399-pc_defconfig")
+        os.system("make O=out roc-rk3399-pc_defconfig")
         print("===============" + '\033[1;33m' + "Start Build Image" + '\033[0m' + "===============")
-        ret = os.system("make Image   2>&1 | tee build_Image.log")
+        ret = os.system("make Image -j32 O=out  2>&1 | tee build_Image.log")
         if ret == 0:
             print("Compile Finished !!!")
         print("===============" + '\033[1;33m' + "End Build Image" + '\033[0m' + "===============")
         #time.sleep(3)
         print("===============" + '\033[1;33m' + "Start Build dtbs" + '\033[0m' + "===============")
-        os.system("make dtbs   2>&1 | tee build_dtbs.log")
+        os.system("make dtbs O=out  2>&1 | tee build_dtbs.log")
         print("===============" + '\033[1;33m' + "END Build dtbs" + '\033[0m' + "===============")
+        if os.path.isdir("~/tftpboot"):
+            print("tftpboot is exist!")
+            os.system("cp out/arch/arm64/boot/Image ~/tftpboot/")
+            os.system("cp out/arch/arm64/boot/dts/rockchip/rk3399-roc-pc.dtb /home/robin/tftpboot/")
+            print("copy rk3399-roc-pc.dtb finish!")
+            print("copy Image finish!")
+        else:
+            print("tftpboot not exist!")
     elif "dtbs" == command_one:
-        os.system("make dtbs   2>&1 | tee build_dtbs.log")
+        os.system("make dtbs -j32 O=out  2>&1 | tee build_dtbs.log")
+        if os.path.isdir("/home/robin/tftpboot"):
+            print("tftpboot is exist!")
+            os.system("cp out/arch/arm64/boot/dts/rockchip/rk3399-roc-pc.dtb /home/robin/tftpboot/")
+            print("copy rk3399-roc-pc.dtb finish!")
     elif "Image" == command_one:
-        os.system("make Image   2>&1 | tee build_Image.log")
+        os.system("make Image -j32 O=out  2>&1 | tee build_Image.log")
+        if os.path.isdir("/home/robin/tftpboot"):
+            print("tftpboot is exist!")
+            os.system("cp out/arch/arm64/boot/Image /home/robin/tftpboot/")
+            print("copy Image to tftpboot dir finish!")
     elif "clean" == command_one:
         finish = os.system("make clean")
         if finish == 0:
@@ -64,7 +89,7 @@ def build_kernel(command_one):
         if ret_modules == 0:
             print("===============" + '\033[1;33m' + "Start INSTALL MODULES" + '\033[0m' + "===============")
             os.system("sudo make ARCH=arm64 INSTALL_MOD_PATH=~/nfs_rootfs/rootfs modules_install")
-            print("===============" + '\033[1;33m' + "END INSTALL dtbs" + '\033[0m' + "===============")
+            print("===============" + '\033[1;33m' + "END INSTALL MODULES" + '\033[0m' + "===============")
         else:
             print("COMPILE MODULES FAILED !!!")
     else:
@@ -74,7 +99,7 @@ def build_kernel(command_one):
 
 def main(argv):
     if len(argv) != 1:
-        print(__doc__)
+        help()
         sys.exit(1)
     set_env()
     build_kernel(argv[0])

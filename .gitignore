@@ -25,3 +25,7 @@ include/config/
 include/generated/
 .config
 *.mod
+out/
+*.log
+*.dist
+spl/
