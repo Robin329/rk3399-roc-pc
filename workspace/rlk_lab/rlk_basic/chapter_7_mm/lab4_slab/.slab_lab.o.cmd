@@ -1,1 +1,0 @@
-cmd_/home/rlk/rlk_basic/runninglinuxkernel_4.0/rlk_lab/rlk_basic/chapter_7_mm/lab4_slab/slab_lab.o := aarch64-linux-gnu-ld -EL    -r -o /home/rlk/rlk_basic/runninglinuxkernel_4.0/rlk_lab/rlk_basic/chapter_7_mm/lab4_slab/slab_lab.o /home/rlk/rlk_basic/runninglinuxkernel_4.0/rlk_lab/rlk_basic/chapter_7_mm/lab4_slab/slab.o 
