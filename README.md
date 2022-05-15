@@ -1,13 +1,13 @@
 rk3399-roc-pc-kernel
-Porting rk3399-roc-pc4.4 kernel version to newest linux
+Porting rk3399-roc-pc 4.4 kernel version to newest linux
 
 1.Compile Steps
-export ARCH=arm64
 
-export CROSS_COMPILE=aarch64-linux-gnu-
+# Full compile
+build.py build_kernel
 
-make rk3399-roc-pc_defconfig
+# Compile dtbs
+build.py dtbs
 
-make Image
-
-make dtbs
+# Compile Image
+build.py Image
