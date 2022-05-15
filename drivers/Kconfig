@@ -205,6 +205,8 @@ source "drivers/thunderbolt/Kconfig"
 
 source "drivers/android/Kconfig"
 
+source "drivers/biscuitos/Kconfig"
+
 source "drivers/gpu/trace/Kconfig"
 
 source "drivers/nvdimm/Kconfig"
