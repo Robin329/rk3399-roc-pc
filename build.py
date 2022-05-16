@@ -57,7 +57,7 @@ def build_kernel(command_one):
         print("===============" + '\033[1;33m' + "Start Build dtbs" + '\033[0m' + "===============")
         os.system("make dtbs O=out  2>&1 | tee build_dtbs.log")
         print("===============" + '\033[1;33m' + "END Build dtbs" + '\033[0m' + "===============")
-        if os.path.isdir("~/tftpboot"):
+        if os.path.isdir("/home/robin/tftpboot"):
             print("tftpboot is exist!")
             os.system("cp out/arch/arm64/boot/Image ~/tftpboot/")
             os.system("cp out/arch/arm64/boot/dts/rockchip/rk3399-roc-pc.dtb /home/robin/tftpboot/")
