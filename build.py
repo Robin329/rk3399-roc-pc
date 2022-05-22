@@ -22,6 +22,7 @@ def help():
     print("         [Image]: compile Image.")
     print("         [clean]: make clean.")
     print("         [modules]: make modules.")
+    print("         [build_virt]: make QEMU virt Image.")
 
 def set_env():
     """Set Build enviroment.
@@ -78,7 +79,7 @@ def build_kernel(command_one):
             os.system("cp out/arch/arm64/boot/Image /home/robin/tftpboot/")
             print("copy Image to tftpboot dir finish!")
     elif "clean" == command_one:
-        finish = os.system("make clean")
+        finish = os.system("make clean O=out")
         if finish == 0:
             print("Clean Finish !!!")
     elif "modules" == command_one:
@@ -92,6 +93,13 @@ def build_kernel(command_one):
             print("===============" + '\033[1;33m' + "END INSTALL MODULES" + '\033[0m' + "===============")
         else:
             print("COMPILE MODULES FAILED !!!")
+    elif "build_virt" == command_one:
+        os.system("make O=out virt_defconfig")
+        print("===============" + '\033[1;33m' + "Start Build Image" + '\033[0m' + "===============")
+        ret = os.system("make Image -j32 O=out  2>&1 | tee build_Image.log")
+        if ret == 0:
+            print("Compile Finished !!!")
+        print("===============" + '\033[1;33m' + "End Build Image" + '\033[0m' + "===============")
     else:
         logger.error("Unknown command  name %s", command_one)
         sys.exit(1)

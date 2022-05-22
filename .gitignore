@@ -1,4 +1,5 @@
 *.cmd
+.vscode
 *.o
 vmlinux
 *.a
