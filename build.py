@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# This scritps to compile rk3399-roc-pc kernel-5.3.6
+# This scritps to compile rk3399-roc-pc kernel-5.17
 #
 # Author:  Robin.J
 # Date:    2019-11-18
@@ -79,8 +79,9 @@ def build_kernel(command_one):
             os.system("cp out/arch/arm64/boot/Image /home/robin/tftpboot/")
             print("copy Image to tftpboot dir finish!")
     elif "clean" == command_one:
-        finish = os.system("make clean O=out")
-        if finish == 0:
+        finish_1 = os.system("make clean O=out")
+        finish_2 = os.system("make mrproper O=out")
+        if finish_1 == 0 and finish_2 == 0:
             print("Clean Finish !!!")
     elif "modules" == command_one:
         print("===============" + '\033[1;33m' + "Start Build MODULES" + '\033[0m' + "===============")

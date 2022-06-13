@@ -1,38 +1,3 @@
-<<<<<<< HEAD
-*.cmd
-.vscode
-*.o
-vmlinux
-*.a
-*.dtb
-*.so
-*.log
-*.tmp
-*.map
-.config.old
-*.d
-*.config
-.version
-*.S
-*.kallsyms*
-*.s
-*.builtin
-scripts/*
-*.symvers
-crypto/*
-*.dbg
-*.modinfo
-arch/arm64/include/generated/
-include/config/
-include/generated/
-.config
-*.mod
-out/
-*.log
-*.dist
-spl/
-drivers/biscuitos
-=======
 # SPDX-License-Identifier: GPL-2.0-only
 #
 # NOTE! Don't add files that are generated in specific
@@ -196,4 +161,36 @@ x509.genkey
 
 # Documentation toolchain
 sphinx_*/
->>>>>>> v5.17
+*.cmd
+.vscode
+*.o
+vmlinux
+*.a
+*.dtb
+*.so
+*.log
+*.tmp
+*.map
+.config.old
+*.d
+*.config
+.version
+*.S
+*.kallsyms*
+*.s
+*.builtin
+scripts/*
+*.symvers
+crypto/*
+*.dbg
+*.modinfo
+arch/arm64/include/generated/
+include/config/
+include/generated/
+.config
+*.mod
+out/
+*.log
+*.dist
+spl/
+drivers/biscuitos

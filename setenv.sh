@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # This scripts for set Build rk3399-roc-pc
-# kernel 5.3.6 envrioment.
+# kernel 5.17 envrioment.
 #   Author: Robin.J
 #   Date  : 2019-11-20
 
