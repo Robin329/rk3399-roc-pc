@@ -194,14 +194,14 @@ void __init arm64_memblock_init(void)
 	s64 linear_region_size = PAGE_END - _PAGE_OFFSET(vabits_actual);
 
 	/*
-	 * Corner case: 52-bit VA capable systems running KVM in nVHE mode may
-	 * be limited in their ability to support a linear map that exceeds 51
-	 * bits of VA space, depending on the placement of the ID map. Given
-	 * that the placement of the ID map may be randomized, let's simply
-	 * limit the kernel's linear map to 51 bits as well if we detect this
-	 * configuration.
-	 */
-	if (IS_ENABLED(CONFIG_KVM) && vabits_actual == 52 &&
+         * Corner case: 52-bit VA capable systems running KVM in nVHE mode may
+         * be limited in their ability to support a linear map that exceeds 51
+         * bits of VA space, depending on the placement of the ID map. Given
+         * that the placement of the ID map may be randomized, let's simply
+         * limit the kernel's linear map to 51 bits as well if we detect this
+         * configuration.
+         */
+        if (IS_ENABLED(CONFIG_KVM) && vabits_actual == 52 &&
 	    is_hyp_mode_available() && !is_kernel_in_hyp_mode()) {
 		pr_info("Capping linear region to 51 bits for KVM in nVHE mode on LVA capable hardware.\n");
 		linear_region_size = min_t(u64, linear_region_size, BIT(51));
@@ -215,17 +215,20 @@ void __init arm64_memblock_init(void)
 	 */
 	memstart_addr = round_down(memblock_start_of_DRAM(),
 				   ARM64_MEMSTART_ALIGN);
-
+	pr_err("linear_region_size:%#x PAGE_END:%#x\n", linear_region_size,
+	       PAGE_END);
 	if ((memblock_end_of_DRAM() - memstart_addr) > linear_region_size)
 		pr_warn("Memory doesn't fit in the linear mapping, VA_BITS too small\n");
-
+	pr_err("memstart_addr:%#x memblock_end_of_DRAM:%#x", memstart_addr,
+	       memblock_end_of_DRAM());
 	/*
 	 * Remove the memory that we will not be able to cover with the
 	 * linear mapping. Take care not to clip the kernel which may be
 	 * high in memory.
 	 */
 	memblock_remove(max_t(u64, memstart_addr + linear_region_size,
-			__pa_symbol(_end)), ULLONG_MAX);
+			      __pa_symbol(_end)),
+			ULLONG_MAX);
 	if (memstart_addr + linear_region_size < memblock_end_of_DRAM()) {
 		/* ensure that memstart_addr remains sufficiently aligned */
 		memstart_addr = round_up(memblock_end_of_DRAM() - linear_region_size,

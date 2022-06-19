@@ -3104,3 +3104,6 @@ CONFIG_ARCH_USE_MEMTEST=y
 # CONFIG_MEMTEST is not set
 # end of Kernel Testing and Coverage
 # end of Kernel hacking
+CONFIG_BISCUITOS=y
+# CONFIG_OF_OVERLAY=y
+# CONFIG_OF_UNITTEST=y

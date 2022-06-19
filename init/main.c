@@ -924,6 +924,66 @@ static void __init print_unknown_bootoptions(void)
 	memblock_free(unknown_options, len);
 }
 
+static int __init my_init(void)
+{
+
+	unsigned long num_physpages;
+
+	num_physpages = get_num_physpages();
+        pr_err("-------------------------------\n");
+        pr_err("sizeof struct page is %u\n", sizeof(struct page));
+        pr_err("VA_BITS = %d\n", VA_BITS);
+
+	pr_err("PAGE_OFFSET = 0x%016lx\n", PAGE_OFFSET);
+	pr_err("VMEMMAP_SHIFT = 0x%016lx\n", VMEMMAP_SHIFT);
+	pr_err("KIMAGE_VADDR = 0x%016lx\n", KIMAGE_VADDR);
+	// pr_err("BPF_JIT_REGION_START = 0x%lx\n", BPF_JIT_REGION_START);
+	// pr_err("BPF_JIT_REGION_SIZE = %dMB\n", BPF_JIT_REGION_SIZE / (1024 * 1024));
+	pr_err("MODULES_END = 0x%016lx\n", MODULES_END);
+	pr_err("MODULES_VADDR = 0x%016lx\n", MODULES_VADDR);
+	pr_err("MODULES_VSIZE = %dMB\n", MODULES_VSIZE / (1024 * 1024));
+	pr_err("PCI_IO_END = 0x%016lx\n", PCI_IO_END);
+	pr_err("PHYS_PFN_OFFSET = 0x%016llx\n", PHYS_PFN_OFFSET);
+	pr_err("PHYS_OFFSET = 0x%016llx\n", PHYS_OFFSET);
+	pr_err("FIXADDR_TOP = 0x%016lx\n", FIXADDR_TOP);
+	pr_err("PAGE_SHIFT = 0x%016x\n", PAGE_SHIFT);
+	pr_err("PAGE_END = 0x%016x\n", PAGE_END);
+	pr_err("init_pg_dir = 0x%016x\n", init_pg_dir);
+	pr_err("init_pg_end = 0x%016x\n", init_pg_end);
+
+	pr_err("swapper_pg_dir = 0x%016x\n", swapper_pg_dir);
+	pr_err("idmap_pg_dir = %p\n", idmap_pg_dir);
+	pr_err("idmap_pg_end = 0x%016x\n", idmap_pg_end);
+	pr_err("tramp_pg_dir = 0x%016x\n", tramp_pg_dir);
+	pr_err("reserved_pg_dir = 0x%016x\n", reserved_pg_dir);
+
+	pr_err("kimage_vaddr = 0x%016x\n", kimage_vaddr);
+	pr_err("kimage_voffset = 0x%016x\n", kimage_voffset);
+	pr_err("memstart_addr = 0x%016x\n", memstart_addr);
+	pr_err("vabits_actual = 0x%016x\n", vabits_actual);
+
+	pr_err("PTRS_PER_PGD = 0x%016x\n", PTRS_PER_PGD);
+
+	pr_err("PAGE_END = 0x%016x\n", PAGE_END);
+	pr_err("PAGE_END = 0x%016x\n", PAGE_END);
+	pr_err("FIXADDR_TOP = 0x%016lx\n", FIXADDR_TOP);
+	pr_err("VMEMMAP_START = 0x%016lx\n", VMEMMAP_START);
+	pr_err("VMEMMAP_END = 0x%016lx\n", VMEMMAP_END);
+	pr_err("PCI_IO_START = 0x%016lx\n", PCI_IO_START);
+	pr_err("PCI_IO_END = 0x%016lx\n", PCI_IO_END);
+	pr_err("VMEMMAP_SIZE = %ld GB\n", VMEMMAP_SIZE / (1024 * 1024 * 1024));
+	pr_err("VMALLOC_START = 0x%016lx, VMALLOC_END = 0x%016lx\n", VMALLOC_START, VMALLOC_END);
+	pr_err("PUD_SHIFT = %lu PUD_SIZE = %luMB PUD_MASK = 0x%016llx\n", PUD_SHIFT, PUD_SIZE / (1024 * 1024), PUD_MASK);
+	pr_err("PMD_SHIFT = %lu PMD_SIZE = %luMB PMD_MASK = 0x%016llx\n", PMD_SHIFT, PMD_SIZE / (1024 * 1024), PMD_MASK);
+	pr_err("PGDIR_SHIFT = %lu PGDIR_SIZE = %luMB PGDIR_MASK = 0x%016llx\n", PGDIR_SHIFT, PGDIR_SIZE / (1024 * 1024), PGDIR_MASK);
+	pr_err("SECTION_SHIFT = %lu SECTION_SIZE = %luMB SECTION_MASK = 0x%016llx\n", SECTIONS_SHIFT, SUBSECTION_SIZE / (1024 * 1024), SECTIONS_MASK);
+
+	pr_err("CONFIG_ARM64_PA_BITS = %d PHYS_MASK_SHIFT = %d\n", CONFIG_ARM64_PA_BITS, CONFIG_ARM64_PA_BITS);
+	pr_err("PHYS_MASK = 0x%016lx\n", PHYS_MASK);
+	pr_err("-------------------------------\n");
+	return 0;
+}
+
 asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 {
 	char *command_line;
@@ -995,10 +1055,10 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	 * time - but meanwhile we still have a functioning scheduler.
 	 */
 	sched_init();
-
-	if (WARN(!irqs_disabled(),
-		 "Interrupts were enabled *very* early, fixing it\n"))
-		local_irq_disable();
+        my_init();
+        if (WARN(!irqs_disabled(),
+                 "Interrupts were enabled *very* early, fixing it\n"))
+          local_irq_disable();
 	radix_tree_init();
 
 	/*

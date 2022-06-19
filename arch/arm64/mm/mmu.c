@@ -1298,14 +1298,14 @@ void *__init fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 	const u64 dt_virt_base = __fix_to_virt(FIX_FDT);
 	int offset;
 	void *dt_virt;
-
-	/*
-	 * Check whether the physical FDT address is set and meets the minimum
-	 * alignment requirement. Since we are relying on MIN_FDT_ALIGN to be
-	 * at least 8 bytes so that we can always access the magic and size
-	 * fields of the FDT header after mapping the first chunk, double check
-	 * here if that is indeed the case.
-	 */
+	pr_info("dt_virt_base:%#x\n", dt_virt_base);
+		/*
+		* Check whether the physical FDT address is set and meets the minimum
+		* alignment requirement. Since we are relying on MIN_FDT_ALIGN to be
+		* at least 8 bytes so that we can always access the magic and size
+		* fields of the FDT header after mapping the first chunk, double check
+		* here if that is indeed the case.
+		*/
 	BUILD_BUG_ON(MIN_FDT_ALIGN < 8);
 	if (!dt_phys || dt_phys % MIN_FDT_ALIGN)
 		return NULL;
