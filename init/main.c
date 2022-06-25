@@ -927,20 +927,23 @@ static void __init print_unknown_bootoptions(void)
 static int __init print_mm_info(void)
 {
 	unsigned long num_physpages;
-
+	extern u64 init_mem_start_addr, init_mem_end_addr;
 	num_physpages = get_num_physpages();
 	pr_err("-------------------------------\n");
 	pr_err("sizeof struct page is %u\n", sizeof(struct page));
+	pr_err("CONFIG_PGTABLE_LEVELS       = %d\n", CONFIG_PGTABLE_LEVELS);
+	pr_err("ARM64_HW_PGTABLE_LEVELS     = %d\n",
+	       ARM64_HW_PGTABLE_LEVELS(vabits_actual));
 	pr_err("VA_BITS       = %d\n", VA_BITS);
 
-	pr_err("VMEMMAP_SHIFT = 0x%d\n", VMEMMAP_SHIFT);
+	pr_err("VMEMMAP_SHIFT = %d\n", VMEMMAP_SHIFT);
 
 	// pr_err("BPF_JIT_REGION_START = 0x%lx\n", BPF_JIT_REGION_START);
 	// pr_err("BPF_JIT_REGION_SIZE = %dMB\n", BPF_JIT_REGION_SIZE / (1024 * 1024));
 
-	pr_err("PAGE_SHIFT        = 0x%d\n", PAGE_SHIFT);
+	pr_err("PAGE_SHIFT        = %d\n", PAGE_SHIFT);
 
-	pr_err("vabits_actual     = 0x%d\n", vabits_actual);
+	pr_err("vabits_actual     = %d\n", vabits_actual);
 	pr_err("__fdt_pointer     = %#llx\n", __fdt_pointer);
 
 	pr_err("__end_of_permanent_fixed_addresses = %d\n",
@@ -949,8 +952,11 @@ static int __init print_mm_info(void)
 	pr_err("__end_of_fixed_addresses = %d\n", __end_of_fixed_addresses);
 
 	pr_err("PTRS_PER_PGD      = 0x%016llx\n", PTRS_PER_PGD);
-
-	pr_err("==============================\n");
+	pr_err("init_mem_start_addr = %#llx\n", init_mem_start_addr);
+	pr_err("init_mem_end_addr   = %#llx\n", init_mem_end_addr);
+	pr_err("__phys_to_pte_val   = %#llx\n",
+	       __phys_to_pte_val(init_mem_start_addr));
+	pr_err("====================================================\n");
 	pr_err("VA_BITS           = %d\n", VA_BITS);
 	pr_err("PHYS_PFN_OFFSET   = 0x%016llx\n", PHYS_PFN_OFFSET);
 	pr_err("PHYS_OFFSET       = 0x%016llx\n", PHYS_OFFSET);
@@ -1002,7 +1008,7 @@ static int __init print_mm_info(void)
 	pr_err("PCI_IO_END        = 0x%016llx\n", PCI_IO_END);
 	pr_err("VMEMMAP_START     = 0x%016llx\n", VMEMMAP_START);
 	pr_err("VMEMMAP_END       = 0x%016llx\n", VMEMMAP_END);
-	pr_err("===============================\n");
+	pr_err("====================================================\n");
 
 	pr_err("VMEMMAP_SIZE      = %ld GB\n",
 	       VMEMMAP_SIZE / (1024 * 1024 * 1024));
@@ -1020,6 +1026,7 @@ static int __init print_mm_info(void)
 	pr_err("CONFIG_ARM64_PA_BITS = %d PHYS_MASK_SHIFT = %d\n",
 	       CONFIG_ARM64_PA_BITS, CONFIG_ARM64_PA_BITS);
 	pr_err("PHYS_MASK         = 0x%016lx\n", PHYS_MASK);
+	pr_err("PAGE_MASK         = 0x%016lx\n", PAGE_MASK);
 	pr_err("-------------------------------\n");
 	return 0;
 }

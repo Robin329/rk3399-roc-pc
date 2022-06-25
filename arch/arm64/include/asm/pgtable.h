@@ -49,7 +49,7 @@
  * use broadcast TLB invalidation instructions, therefore a spurious page
  * fault on one CPU which has been handled concurrently by another CPU
  * does not need to perform additional invalidation.
- */
+*/
 #define flush_tlb_fix_spurious_fault(vma, address) do { } while (0)
 
 /*

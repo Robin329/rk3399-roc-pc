@@ -60,6 +60,7 @@ def build_kernel(command_one):
         print("===============" + '\033[1;33m' + "END Build dtbs" + '\033[0m' + "===============")
         print("===============" + '\033[1;33m' + "Start Build modules" + '\033[0m' + "===============")
         os.system("make O=out -j32 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules")
+        os.system("cd out/ && python ../scripts/clang-tools/gen_compile_commands.py && cd ../")
         print("===============" + '\033[1;33m' + "END Build modules" + '\033[0m' + "===============")
         if os.path.isdir("/home/robin/tftpboot"):
             print("tftpboot is exist!")
@@ -77,6 +78,7 @@ def build_kernel(command_one):
             print("copy rk3399-roc-pc.dtb finish!")
     elif "Image" == command_one:
         os.system("make Image -j32 O=out  2>&1 | tee build_Image.log")
+        os.system("cd out/ && python ../scripts/clang-tools/gen_compile_commands.py && cd ../")
         if os.path.isdir("/home/robin/tftpboot"):
             print("tftpboot is exist!")
             os.system("cp out/arch/arm64/boot/Image /home/robin/tftpboot/")

@@ -7642,6 +7642,7 @@ static inline void pgdat_set_deferred_range(pg_data_t *pgdat)
 static inline void pgdat_set_deferred_range(pg_data_t *pgdat) {}
 #endif
 
+u64 init_mem_start_addr, init_mem_end_addr;
 static void __init free_area_init_node(int nid)
 {
 	pg_data_t *pgdat = NODE_DATA(nid);
@@ -7660,6 +7661,8 @@ static void __init free_area_init_node(int nid)
 	pr_info("Initmem setup node %d [mem %#018Lx-%#018Lx]\n", nid,
 		(u64)start_pfn << PAGE_SHIFT,
 		end_pfn ? ((u64)end_pfn << PAGE_SHIFT) - 1 : 0);
+	init_mem_start_addr = (u64)start_pfn << PAGE_SHIFT;
+	init_mem_end_addr = end_pfn ? ((u64)end_pfn << PAGE_SHIFT) - 1 : 0;
 	calculate_node_totalpages(pgdat, start_pfn, end_pfn);
 
 	alloc_node_mem_map(pgdat);
