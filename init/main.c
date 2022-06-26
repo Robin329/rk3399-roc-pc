@@ -1018,6 +1018,9 @@ static int __init print_mm_info(void)
 	       PUD_SHIFT, PUD_SIZE / (1024 * 1024), PUD_MASK);
 	pr_err("PMD_SHIFT         = %lu PMD_SIZE = %luMB PMD_MASK = 0x%016llx\n",
 	       PMD_SHIFT, PMD_SIZE / (1024 * 1024), PMD_MASK);
+	pr_err("PMD_TYPE_TABLE    = %#llx\n", PMD_TYPE_TABLE);
+	pr_err("PMD_TYPE_SECT     = %#llx\n", PMD_TYPE_SECT);
+	pr_err("PMD_TYPE_TABLE    = %#llx\n", PMD_TYPE_TABLE);
 	pr_err("PGDIR_SHIFT       = %lu PGDIR_SIZE = %luMB PGDIR_MASK = 0x%016llx\n",
 	       PGDIR_SHIFT, PGDIR_SIZE / (1024 * 1024), PGDIR_MASK);
 	pr_err("SECTION_SHIFT     = %lu SECTION_SIZE = %luMB SECTION_MASK = 0x%016llx\n",
