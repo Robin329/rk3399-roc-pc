@@ -956,6 +956,11 @@ static int __init print_mm_info(void)
 	pr_err("init_mem_end_addr   = %#llx\n", init_mem_end_addr);
 	pr_err("__phys_to_pte_val   = %#llx\n",
 	       __phys_to_pte_val(init_mem_start_addr));
+	pr_err("ARM64_KERNEL_USES_PMD_MAPS=%d\n", ARM64_KERNEL_USES_PMD_MAPS);
+	pr_err("SWAPPER_PGTABLE_LEVELS    =%d\n", SWAPPER_PGTABLE_LEVELS);
+	pr_err("IDMAP_PGTABLE_LEVELS      =%d\n", IDMAP_PGTABLE_LEVELS);
+	pr_err("ARM64_HW_PGTABLE_LEVELS(PHYS_MASK_SHIFT)=%d\n",
+	       ARM64_HW_PGTABLE_LEVELS(PHYS_MASK_SHIFT));
 	pr_err("====================================================\n");
 	pr_err("VA_BITS           = %d\n", VA_BITS);
 	pr_err("PHYS_PFN_OFFSET   = 0x%016llx\n", PHYS_PFN_OFFSET);
