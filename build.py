@@ -88,6 +88,8 @@ def build_kernel(command_one):
         finish_2 = os.system("make mrproper O=out")
         if finish_1 == 0 and finish_2 == 0:
             print("Clean Finish !!!")
+    elif "mrproper" == command_one:
+        os.system("make mrproper O=out")
     elif "modules" == command_one:
         print("===============" + '\033[1;33m' + "Start Build MODULES" + '\033[0m' + "===============")
         #os.system("make ARCH=arm64 mrproper")

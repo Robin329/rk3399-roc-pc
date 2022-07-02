@@ -219,8 +219,8 @@ void __init arm64_memblock_init(void)
 	       PAGE_END);
 	if ((memblock_end_of_DRAM() - memstart_addr) > linear_region_size)
 		pr_warn("Memory doesn't fit in the linear mapping, VA_BITS too small\n");
-	pr_err("memstart_addr:%#x memblock_end_of_DRAM:%#x", memstart_addr,
-	       memblock_end_of_DRAM());
+	pr_err("memstart_addr:%#x memblock_end_of_DRAM:%#x _end:%#llx\n",
+	       memstart_addr, memblock_end_of_DRAM(), __pa_symbol(_end));
 	/*
 	 * Remove the memory that we will not be able to cover with the
 	 * linear mapping. Take care not to clip the kernel which may be
