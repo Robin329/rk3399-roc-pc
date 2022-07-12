@@ -78,11 +78,11 @@ def build_kernel(command_one):
             print("copy rk3399-roc-pc.dtb finish!")
     elif "Image" == command_one:
         os.system("make Image -j32 O=out  2>&1 | tee build_Image.log")
-        os.system("cd out/ && python ../scripts/clang-tools/gen_compile_commands.py && cd ../")
         if os.path.isdir("/home/robin/tftpboot"):
             print("tftpboot is exist!")
             os.system("cp out/arch/arm64/boot/Image /home/robin/tftpboot/")
             print("copy Image to tftpboot dir finish!")
+        os.system("cd out/ && python ../scripts/clang-tools/gen_compile_commands.py && cd ../")
     elif "clean" == command_one:
         finish_1 = os.system("make clean O=out")
         finish_2 = os.system("make mrproper O=out")
