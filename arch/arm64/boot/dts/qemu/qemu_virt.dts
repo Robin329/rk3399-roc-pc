@@ -9,7 +9,7 @@
 // boot_cpuid_phys:	0x0
 // size_dt_strings:	0x1bb
 // size_dt_struct:	0x1bc8
-
+#include "qemu.dtsi"
 / {
     interrupt-parent = <0x00008001>;
     #size-cells = <0x00000002>;

@@ -318,5 +318,6 @@ config ARCH_ZYNQMP
 	bool "Xilinx ZynqMP Family"
 	help
 	  This enables support for Xilinx ZynqMP Family
-
+config QEMU_VIRT_DTS
+    bool "Configuration aach64 qemu dts"
 endmenu
