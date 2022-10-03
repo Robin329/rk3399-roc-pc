@@ -70,6 +70,12 @@ def build_kernel(command_one):
             print("copy Image finish!")
         else:
             print("tftpboot not exist!")
+        if os.path.isdir("/home/robin/nfs_rootfs"):
+            print("===============" + '\033[1;33m' + "Start INSTALL MODULES" + '\033[0m' + "===============")
+            os.system("sudo make O=out -j32 ARCH=arm64  M=$(PWD) INSTALL_MOD_PATH=/home/robin/nfs_rootfs modules_install")
+            print("===============" + '\033[1;33m' + "END INSTALL MODULES" + '\033[0m' + "===============")
+        else:
+            print("nfs_rootfs directory no exist COMPILE MODULES FAILED !!!")
     elif "dtbs" == command_one:
         os.system("make dtbs -j32 O=out  2>&1 | tee build_dtbs.log")
         if os.path.isdir("/home/robin/tftpboot"):
@@ -95,9 +101,9 @@ def build_kernel(command_one):
         #os.system("make ARCH=arm64 mrproper")
         ret_modules = os.system("make O=out -j32 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules")
         print("===============" + '\033[1;33m' + "END Build modules" + '\033[0m' + "===============")
-        if ret_modules == 0 and os.path.isdir("/home/robin/nfs_rootfs/rootfs"):
+        if ret_modules == 0 and os.path.isdir("/home/robin/nfs_rootfs"):
             print("===============" + '\033[1;33m' + "Start INSTALL MODULES" + '\033[0m' + "===============")
-            os.system("sudo make O=out -j32 ARCH=arm64 INSTALL_MOD_PATH=~/nfs_rootfs/rootfs modules_install")
+            os.system("sudo make O=out -j32 ARCH=arm64  M=$(PWD) INSTALL_MOD_PATH=/home/robin/nfs_rootfs modules_install")
             print("===============" + '\033[1;33m' + "END INSTALL MODULES" + '\033[0m' + "===============")
         else:
             print("nfs_rootfs directory no exist COMPILE MODULES FAILED !!!")
