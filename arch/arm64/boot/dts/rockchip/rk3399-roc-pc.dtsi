@@ -741,18 +741,18 @@
 /* SSD1327 1.5 inch OLED module */
 &spi5 {
 	status = "okay";
-/* 	spi_ssd1327@0 {
-		compatible = "rockchip,spi-ssd1327-oled";
+	ssd1327@0 {
+		compatible = "rockchip,ssd1327";
 		reg = <0>;
 		id = <0>;
 		spi-max-frequency = <25000000>;
 		status = "okay";
-	}; */
-	spidev@0 {
-		compatible = "rockchip,spidev";
-		reg = <0>;/*CS0*/
-		spi-max-frequency = <24000000>;
 	};
+ 	// spidev@0 {
+	// 	compatible = "rockchip,spidev";
+	// 	reg = <0>;/*CS0*/
+	// 	spi-max-frequency = <24000000>;
+	// };
 };
 
 &tcphy0 {

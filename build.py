@@ -103,7 +103,7 @@ def build_kernel(command_one):
         print("===============" + '\033[1;33m' + "END Build modules" + '\033[0m' + "===============")
         if ret_modules == 0 and os.path.isdir("/home/robin/nfs_rootfs"):
             print("===============" + '\033[1;33m' + "Start INSTALL MODULES" + '\033[0m' + "===============")
-            os.system("sudo make O=out -j32 ARCH=arm64  M=$(PWD) INSTALL_MOD_PATH=/home/robin/nfs_rootfs modules_install")
+            os.system("sudo make O=out -j32 ARCH=arm64 INSTALL_MOD_PATH=/home/robin/nfs_rootfs modules_install")
             print("===============" + '\033[1;33m' + "END INSTALL MODULES" + '\033[0m' + "===============")
         else:
             print("nfs_rootfs directory no exist COMPILE MODULES FAILED !!!")
