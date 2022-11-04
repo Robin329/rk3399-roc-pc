@@ -107,6 +107,7 @@ def build_kernel(command_one):
         ret = os.system("make Image -j32 O=out  2>&1 | tee build_Image.log")
         print("===============" + '\033[1;33m' + "Start Build Dtbs" + '\033[0m' + "===============")
         ret = os.system("make dtbs -j32 O=out  2>&1 | tee build_Image.log")
+        ret = os.system("make O=out -j32 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules")
         if ret == 0:
             print("Compile Finished !!!")
         print("===============" + '\033[1;33m' + "End Build Image" + '\033[0m' + "===============")
