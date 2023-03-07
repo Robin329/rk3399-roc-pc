@@ -35,7 +35,7 @@
 #define DRIVER_DESC	"Virtual Kernel Mode Setting"
 #define DRIVER_DATE	"20180514"
 #define DRIVER_MAJOR	1
-#define DRIVER_MINOR	0
+#define DRIVER_MINOR 2
 
 static struct vkms_config *default_config;
 
