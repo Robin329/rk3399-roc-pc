@@ -314,12 +314,16 @@ static struct component_match *rockchip_drm_match_add(struct device *dev)
 
 		do {
 			d = platform_find_device_by_driver(p, &drv->driver);
+			if (d)
+				pr_info("[%s:%d] name:%s\n", __FUNCTION__,
+					__LINE__, dev_name(d));
 			put_device(p);
 			p = d;
 
 			if (!d)
 				break;
-
+			pr_info("[%s:%d] name:%s\n", __FUNCTION__, __LINE__,
+				dev_name(d));
 			device_link_add(dev, d, DL_FLAG_STATELESS);
 			component_match_add(dev, &match, compare_dev, d);
 		} while (true);

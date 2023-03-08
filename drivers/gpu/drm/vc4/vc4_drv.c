@@ -292,8 +292,8 @@ static void vc4_drm_unbind(struct device *dev)
 
 	drm_atomic_helper_shutdown(drm);
 }
-
 static const struct component_master_ops vc4_drm_ops = {
+
 	.bind = vc4_drm_bind,
 	.unbind = vc4_drm_unbind,
 };
