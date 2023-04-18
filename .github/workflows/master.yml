@@ -30,7 +30,7 @@ jobs:
         git clone https://github.com/Robin329/kernel_tutorial.git
 
     - name: set soft link
-      run: sudo ln -s $(pwd)/kernel_tutorial/linux_stable/driver/biscuitos   $(pwd)/driver/biscuitos
+      run: sudo cp -rf kernel_tutorial/linux_stable/driver/biscuitos   ./driver/
 
     - name: Install toolchain
       run:
