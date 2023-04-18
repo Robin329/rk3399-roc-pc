@@ -24,6 +24,14 @@ jobs:
       run:
         sudo apt-get update
 
+    - name: git pull thirty lib
+      run: |
+        git submodule init
+        git submodule update --checkout
+
+    - name: set soft link
+      run: sudo ln -s $(pwd)/linux_stable/driver/biscuitos   $(pwd)/../driver/biscuitos
+
     - name: Install toolchain
       run:
         if [[ "${{matrix.arch}}" == "arm64" ]]; then
