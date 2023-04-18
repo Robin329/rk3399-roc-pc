@@ -4,7 +4,7 @@
 
 Porting rk3399-roc-pc 4.4 kernel version to newest linux v5.17
 
-## 1.Compile Steps
+## 1. Compile Steps
 
 ### Full compile
 build.py build_kernel
@@ -22,7 +22,7 @@ build.py modules
 build.py clean
 
 
-## 2.Compile QEMU virto
+## 2. Compile QEMU virto
 
 ### Full compile
 build.py build_virt
