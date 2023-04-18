@@ -26,6 +26,8 @@ jobs:
 
     - name: git pull thirty lib
       run: |
+        cd rk3399-roc-pc
+        git submodule init
         git submodule update --checkout
 
     - name: set soft link
