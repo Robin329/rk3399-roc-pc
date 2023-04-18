@@ -21,12 +21,23 @@ jobs:
               
     steps:
     - name: Update install
-      run:
+      run: |
+        sudo apt-get install git
+        sudo apt-get install gcc g++
+        sudo apt-get install libncurses5-dev 
+        sudo apt-get install build-essential
+        sudo apt-get install kernel-package 
+        sudo apt-get install libssl-dev
+        sudo apt-get install libc6-dev 
+        sudo apt-get install bin86
+        sudo apt-get install flex 
+        sudo apt-get install bison  
+        sudo apt-get install qttools5-dev  
+        sudo apt-get install libelf-dev
         sudo apt-get update
 
     - name: git pull thirty lib
       run: |
-        cd rk3399-roc-pc
         git submodule init
         git submodule update --checkout
 
