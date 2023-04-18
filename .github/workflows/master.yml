@@ -42,7 +42,8 @@ jobs:
     - name: set soft link
       run: |
         git submodule init && git submodule update --checkout && sudo ln -s ${{github.workspace}}/workspace/linux_stable/driver/biscuitos ${{github.workspace}}/drivers/biscuitos && ls -alh 
-      
+        ls  ${{github.workspace}}/drivers/bicuitos/
+        
     - name: Build kernel ${{matrix.name}}
       run: |
         mkdir ${{github.workspace}}/build
