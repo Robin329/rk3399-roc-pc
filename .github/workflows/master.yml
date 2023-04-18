@@ -29,9 +29,6 @@ jobs:
       run: |
         git clone https://github.com/Robin329/kernel_tutorial.git
 
-    - name: set soft link
-      run: echo "PWD========$(pwd)"
-
     - name: Install toolchain
       run:
         if [[ "${{matrix.arch}}" == "arm64" ]]; then
@@ -46,6 +43,12 @@ jobs:
         fetch-depth: 1
         clean: true
 
+    - name: set soft link
+      run: ｜
+        git submodule init
+        git submodule update --checkout
+        sudo ln -s ${{github.workspace}}/workspace/linux_stable/driver/biscuitos ${{github.workspace}}/driver/biscuitos
+      
     - name: Build kernel ${{matrix.name}}
       run: |
         mkdir ${{github.workspace}}/build
