@@ -1,3 +1,4 @@
+[![Build Status](https://github.com/Robin329/rk3399-roc-pc/actions/workflows/master.yml/badge.svg)](https://github.com/Robin329/rk3399-roc-pc/actions/workflows/master.yml)
 
 
 # rk3399-roc-pc-kernel
