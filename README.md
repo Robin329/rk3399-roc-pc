@@ -1,4 +1,6 @@
-# rk3399-roc-pc-kernel [![Build Status](https://github.com/Robin329/rk3399-roc-pc/actions/workflows/master.yml/badge.svg)](https://github.com/Robin329/rk3399-roc-pc/actions/workflows/master.yml)
+# rk3399-roc-pc-kernel 
+
+[![Build Status](https://github.com/Robin329/rk3399-roc-pc/actions/workflows/master.yml/badge.svg)](https://github.com/Robin329/rk3399-roc-pc/actions/workflows/master.yml)
 
 Porting rk3399-roc-pc 4.4 kernel version to newest linux v5.17
 
