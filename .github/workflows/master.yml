@@ -25,10 +25,6 @@ jobs:
         sudo apt-get install git gcc g++ libncurses5-dev  build-essential  libssl-dev flex  bison -y
         sudo apt-get update
 
-    - name: git pull thirty lib
-      run: |
-        git clone https://github.com/Robin329/kernel_tutorial.git
-
     - name: Install toolchain
       run:
         if [[ "${{matrix.arch}}" == "arm64" ]]; then
