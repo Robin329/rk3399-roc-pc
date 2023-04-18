@@ -44,8 +44,9 @@ jobs:
         git submodule init && git submodule update --checkout 
         
     - name: cp biscuitos
-      run: sudo cp -rf ${{github.workspace}}/workspace/linux-stable/driver/biscuitos ${{github.workspace}}/drivers/ && ls -alh 
-           ls  ${{github.workspace}}/drivers/biscuitos/
+      run: sudo cp -rf ${{github.workspace}}/workspace/linux-stable/driver/biscuitos ${{github.workspace}}/drivers/ 
+        ls -alh 
+        ls  ${{github.workspace}}/drivers/biscuitos/
         
     - name: Build kernel ${{matrix.name}}
       run: |
