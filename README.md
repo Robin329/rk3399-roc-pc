@@ -1,4 +1,3 @@
-[![Build Status](https://github.com/Robin329/rk3399-roc-pc/actions/workflows/c-cpp.yml/badge.svg)](https://github.com/Robin329/rk3399-roc-pc/actions/workflows/c-cpp.yml)
 
 
 # rk3399-roc-pc-kernel
