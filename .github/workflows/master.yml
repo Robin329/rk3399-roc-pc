@@ -40,7 +40,7 @@ jobs:
         clean: true
 
     - name: set soft link
-      run:
+      run: |
         git submodule init
         git submodule update --checkout
         sudo ln -s ${{github.workspace}}/workspace/linux_stable/driver/biscuitos ${{github.workspace}}/driver/biscuitos
