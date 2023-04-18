@@ -45,7 +45,7 @@ jobs:
         
     - name: cp biscuitos
       run: sudo cp -rf ${{github.workspace}}/workspace/linux-stable/driver/biscuitos ${{github.workspace}}/drivers/ && ls -alh 
-           ls  ${{github.workspace}}/drivers/bicuitos/
+           ls  ${{github.workspace}}/drivers/biscuitos/
         
     - name: Build kernel ${{matrix.name}}
       run: |
