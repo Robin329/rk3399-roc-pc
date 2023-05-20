@@ -1,0 +1,1 @@
+/data/workspace/rk3399-roc-pc/tools/spi/../../include/uapi/linux/spi/spi.h

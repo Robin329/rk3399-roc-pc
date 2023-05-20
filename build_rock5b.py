@@ -62,31 +62,31 @@ def build_kernel(command_one):
         os.system("make O=build -j32 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules")
         os.system("./scripts/clang-tools/gen_compile_commands.py -d build/")
         print("===============" + '\033[1;33m' + "END Build modules" + '\033[0m' + "===============")
-        if os.path.isdir("/home/rock/tftpboot"):
+        if os.path.isdir("/data/tftpboot"):
             print("tftpboot is exist!")
-            os.system("sudo cp build/arch/arm64/boot/Image /home/rock/tftpboot/")
-            os.system("sudo cp build/arch/arm64/boot/dts/rockchip/rk3399-roc-pc.dtb /home/rock/tftpboot/")
+            os.system("sudo cp build/arch/arm64/boot/Image /data/tftpboot/")
+            os.system("sudo cp build/arch/arm64/boot/dts/rockchip/rk3399-roc-pc.dtb /data/tftpboot/")
             print("copy rk3399-roc-pc.dtb finish!")
             print("copy Image finish!")
         else:
             print("tftpboot not exist!")
-        if os.path.isdir("/home/rock/nfs_rootfs"):
+        if os.path.isdir("/data/nfs_rootfs"):
             print("===============" + '\033[1;33m' + "Start INSTALL MODULES" + '\033[0m' + "===============")
-            os.system("sudo make O=build -j32 ARCH=arm64  M=$(PWD) INSTALL_MOD_PATH=/home/rock/nfs_rootfs modules_install")
+            os.system("sudo make O=build -j32 ARCH=arm64  M=$(PWD) INSTALL_MOD_PATH=/data/nfs_rootfs modules_install")
             print("===============" + '\033[1;33m' + "END INSTALL MODULES" + '\033[0m' + "===============")
         else:
             print("nfs_rootfs directory no exist COMPILE MODULES FAILED !!!")
     elif "dtbs" == command_one:
         os.system("make dtbs -j32 O=build  2>&1 | tee build_dtbs.log")
-        if os.path.isdir("/home/rock/tftpboot"):
+        if os.path.isdir("/data/tftpboot"):
             print("tftpboot is exist!")
-            os.system("sudo cp build/arch/arm64/boot/dts/rockchip/rk3399-roc-pc.dtb /home/rock/tftpboot/")
+            os.system("sudo cp build/arch/arm64/boot/dts/rockchip/rk3399-roc-pc.dtb /data/tftpboot/")
             print("copy rk3399-roc-pc.dtb finish!")
     elif "Image" == command_one:
         os.system("make -j32 O=build  2>&1 | tee build_Image.log")
-        if os.path.isdir("/home/rock/tftpboot"):
+        if os.path.isdir("/data/tftpboot"):
             print("tftpboot is exist!")
-            os.system("sudo cp build/arch/arm64/boot/Image /home/rock/tftpboot/")
+            os.system("sudo cp build/arch/arm64/boot/Image /data/tftpboot/")
             print("copy Image to tftpboot dir finish!")
         os.system("python ./scripts/clang-tools/gen_compile_commands.py -d build")
     elif "clean" == command_one:
@@ -101,9 +101,9 @@ def build_kernel(command_one):
         #os.system("make ARCH=arm64 mrproper")
         ret_modules = os.system("make O=build -j32 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules")
         print("===============" + '\033[1;33m' + "END Build modules" + '\033[0m' + "===============")
-        if ret_modules == 0 and os.path.isdir("/home/rock/nfs_rootfs"):
+        if ret_modules == 0 and os.path.isdir("/data/nfs_rootfs"):
             print("===============" + '\033[1;33m' + "Start INSTALL MODULES" + '\033[0m' + "===============")
-            os.system("sudo make O=build -j32 ARCH=arm64 INSTALL_MOD_PATH=/home/rock/nfs_rootfs modules_install")
+            os.system("sudo make O=build -j32 ARCH=arm64 INSTALL_MOD_PATH=/data/nfs_rootfs modules_install")
             print("===============" + '\033[1;33m' + "END INSTALL MODULES" + '\033[0m' + "===============")
         else:
             print("nfs_rootfs directory no exist COMPILE MODULES FAILED !!!")

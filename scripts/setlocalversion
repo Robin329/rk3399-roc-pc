@@ -29,8 +29,7 @@ if test $# -gt 0 -o ! -d "$srctree"; then
 	usage
 fi
 
-scm_version()
-{
+scm_version() {
 	local short
 	short=false
 
@@ -45,7 +44,7 @@ scm_version()
 
 	# Check for git and a git repo.
 	if test -z "$(git rev-parse --show-cdup 2>/dev/null)" &&
-	   head=$(git rev-parse --verify HEAD 2>/dev/null); then
+		head=$(git rev-parse --verify HEAD 2>/dev/null); then
 
 		# If we are at a tagged commit (like "v2.6.30-rc6"), we ignore
 		# it, because this version is defined in the top level Makefile.
@@ -79,15 +78,14 @@ scm_version()
 		# git-update-index(1), git-diff-index(1), and git-status(1).
 		if {
 			git --no-optional-locks status -uno --porcelain 2>/dev/null ||
-			git diff-index --name-only HEAD
+				git diff-index --name-only HEAD
 		} | read dummy; then
 			printf '%s' -dirty
 		fi
 	fi
 }
 
-collect_files()
-{
+collect_files() {
 	local file res=
 
 	for file; do
@@ -139,7 +137,7 @@ elif [ "${LOCALVERSION+set}" != "set" ]; then
 	# If the variable LOCALVERSION is set (including being set
 	# to an empty string), we don't want to append a plus sign.
 	scm=$(scm_version --short)
-	res="$res${scm:++}"
+	res="$res${scm:+}"
 fi
 
 echo "$res"
