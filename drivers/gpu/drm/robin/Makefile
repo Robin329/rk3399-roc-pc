@@ -7,4 +7,4 @@ robin-vkms-y := 	\
 	robin_vkms_composer.o \
 	robin_vkms_writeback.o
 
-# obj-m += robin-vkms.o
+obj-$(CONFIG_DRM_ROBIN_VKMS) += robin-vkms.o
